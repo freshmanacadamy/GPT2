@@ -8,10 +8,8 @@ process.on('unhandledRejection', (error) => {
 
 // ========== CONFIGURATION ========== //
 const BOT_TOKEN = process.env.BOT_TOKEN;
-// Ensure ADMIN_IDS is always an array of numbers
 const ADMIN_IDS = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',').map(id => parseInt(id.trim())) : [];
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
-// Handle newlines in private keys for Vercel/Env variables
 const FIREBASE_PRIVATE_KEY = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
 const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL;
 
@@ -21,7 +19,6 @@ let db;
 let bucket;
 let bot;
 
-// Initialize Firebase & Bot (Wrapped to be safe for Serverless)
 function initializeServices() {
   if (isInitialized) return true;
 
@@ -31,7 +28,6 @@ function initializeServices() {
   }
 
   try {
-    // Check if firebase is already initialized to prevent "App already exists" error
     if (!admin.apps.length) {
       admin.initializeApp({
         credential: admin.credential.cert({
@@ -45,7 +41,7 @@ function initializeServices() {
     
     db = admin.firestore();
     bucket = admin.storage().bucket();
-    bot = new TelegramBot(BOT_TOKEN, { polling: false }); // Webhook mode
+    bot = new TelegramBot(BOT_TOKEN, { polling: false }); 
     
     isInitialized = true;
     console.log('✅ Services initialized successfully');
@@ -56,10 +52,11 @@ function initializeServices() {
   }
 }
 
-// Attempt initialization immediately
+// Start immediately
 initializeServices();
 
 // ========== DATA STRUCTURES ========== //
+// (In a real app, these might come from the DB, but we keep them static for stability now)
 const folders = new Map([
   ['natural', {
     id: 'natural',
@@ -159,7 +156,6 @@ const FirebaseService = {
 
   async getAdminNotes(adminId) {
     try {
-      // Ensure adminId matches the type stored in DB (Number)
       const idToCheck = parseInt(adminId);
       const snapshot = await db.collection('notes')
         .where('uploadedBy', '==', idToCheck)
@@ -207,7 +203,6 @@ const FirebaseService = {
     }
   },
 
-  // 🛠️ FIXED: Real File Upload Logic with Signed URLs
   async uploadHTMLToStorage(fileBuffer, noteId) {
     try {
       const fileName = `notes/${noteId}.html`;
@@ -220,8 +215,6 @@ const FirebaseService = {
         }
       });
       
-      // FIXED: Use Signed URL instead of makePublic() for better compatibility
-      // This creates a URL valid for ~500 years
       const [url] = await file.getSignedUrl({
         action: 'read',
         expires: '01-01-2500'
@@ -241,12 +234,12 @@ const FirebaseService = {
         db.collection('users').get()
       ]);
       
-      const totalNotes = notesSnapshot.size;
-      const activeNotes = notesSnapshot.docs.filter(doc => doc.data().is_active !== false).length;
-      const totalUsers = usersSnapshot.size;
-      const totalViews = notesSnapshot.docs.reduce((sum, doc) => sum + (doc.data().views || 0), 0);
-      
-      return { totalNotes, activeNotes, totalUsers, totalViews };
+      return { 
+        totalNotes: notesSnapshot.size, 
+        activeNotes: notesSnapshot.docs.filter(doc => doc.data().is_active !== false).length,
+        totalUsers: usersSnapshot.size, 
+        totalViews: notesSnapshot.docs.reduce((sum, doc) => sum + (doc.data().views || 0), 0)
+      };
     } catch (error) {
       console.error('Firebase getStats error:', error);
       return { totalNotes: 0, activeNotes: 0, totalUsers: 0, totalViews: 0 };
@@ -254,12 +247,12 @@ const FirebaseService = {
   }
 };
 
-// ========== BOT OPERATIONS ========== //
+// ========== UI FUNCTIONS ========== //
 const showMainMenu = async (chatId, userId) => {
   const isAdmin = ADMIN_IDS.includes(userId);
-  
   if (isAdmin) {
-    const options = {
+    await bot.sendMessage(chatId, `🤖 *JU Notes Admin Panel*\nSelect an option:`, { 
+      parse_mode: 'Markdown',
       reply_markup: {
         keyboard: [
           [{ text: '📚 My Notes' }, { text: '📤 Upload Note' }],
@@ -268,456 +261,270 @@ const showMainMenu = async (chatId, userId) => {
         ],
         resize_keyboard: true
       }
-    };
-    
-    await bot.sendMessage(chatId,
-      `🤖 *JU Notes Management System*\n\n` +
-      `Welcome Admin! Manage all study materials.`,
-      { parse_mode: 'Markdown', ...options }
-    );
+    });
   } else {
-    const options = {
+    await bot.sendMessage(chatId, `📚 *JU Study Materials*`, { 
+      parse_mode: 'Markdown',
       reply_markup: {
-        keyboard: [
-          [{ text: '🔓 Access Notes' }, { text: '📞 Contact Admin' }],
-          [{ text: 'ℹ️ Help' }]
-        ],
+        keyboard: [[{ text: '🔓 Access Notes' }, { text: '📞 Contact Admin' }]],
         resize_keyboard: true
       }
-    };
-    
-    await bot.sendMessage(chatId,
-      `📚 *JU Study Materials*\n\n` +
-      `Access approved study notes and resources.`,
-      { parse_mode: 'Markdown', ...options }
-    );
+    });
   }
 };
 
 const showAdminDashboard = async (chatId) => {
-  try {
-    const stats = await FirebaseService.getStats();
-
-    const message = 
-      `🤖 *Admin Dashboard*\n\n` +
-      `📊 Quick Stats:\n` +
-      `• Notes: ${stats.activeNotes}/${stats.totalNotes} active\n` +
-      `• Users: ${stats.totalUsers}\n` +
-      `• Total Views: ${stats.totalViews}\n\n` +
-      `🛠️ Quick Actions:`;
-
-    const options = {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '📚 View My Notes', callback_data: 'admin_view_notes' }],
-          [{ text: '📤 Upload New Note', callback_data: 'admin_upload_note' }],
-          [{ text: '📁 Manage Folders', callback_data: 'admin_manage_folders' }],
-          [{ text: '⚡ Bulk Operations', callback_data: 'admin_bulk_ops' }]
-        ]
-      }
-    };
-
-    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown', ...options });
-  } catch (error) {
-    console.error('Error showing dashboard:', error);
-    await bot.sendMessage(chatId, '❌ Error loading dashboard. Please try again.');
-  }
-};
-
-const showNotesList = async (chatId, userId) => {
-  try {
-    const userNotes = await FirebaseService.getAdminNotes(userId);
-
-    if (userNotes.length === 0) {
-      const options = {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '📤 Upload Your First Note', callback_data: 'admin_upload_note' }],
-            [{ text: '🔄 Refresh', callback_data: 'refresh_notes' }]
-          ]
-        }
-      };
-      
-      await bot.sendMessage(chatId,
-        `📚 *My Notes*\n\n` +
-        `No notes found. Upload your first study material! 📤`,
-        { parse_mode: 'Markdown', ...options }
-      );
-      return;
-    }
-
-    let message = `📚 *Your Notes (${userNotes.length})*\n\n`;
-    
-    userNotes.forEach((note, index) => {
-      const folder = folders.get(note.folder);
-      const category = categories.get(note.category);
-      const status = note.is_active === false ? '🚫' : '✅';
-      message += `${index + 1}. ${status} ${note.title}\n`;
-      message += `   📁 ${folder?.name || 'Uncategorized'} • 👀 ${note.views || 0} views\n\n`;
-    });
-
-    const options = {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '📤 Upload New Note', callback_data: 'admin_upload_note' }],
-          [{ text: '🔄 Refresh List', callback_data: 'refresh_notes' }],
-          [{ text: '⚡ Bulk Actions', callback_data: 'admin_bulk_ops' }]
-        ]
-      }
-    };
-
-    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown', ...options });
-  } catch (error) {
-    console.error('Error showing notes list:', error);
-    await bot.sendMessage(chatId, '❌ Error loading notes. Please try again.');
-  }
-};
-
-const showNoteManagement = async (chatId, noteId) => {
-  try {
-    const note = await FirebaseService.getNote(noteId);
-
-    if (!note) {
-      await bot.sendMessage(chatId, '❌ Note not found. It may have been deleted.');
-      return;
-    }
-
-    const folder = folders.get(note.folder);
-    const category = categories.get(note.category);
-    // Safe date handling
-    const uploadedDate = note.createdAt?.toDate 
-      ? note.createdAt.toDate().toLocaleDateString() 
-      : new Date().toLocaleDateString();
-
-    const message =
-      `📖 *${note.title}*\n\n` +
-      `📝 *Description:*\n${note.description || 'No description'}\n\n` +
-      `📊 *Statistics:*\n` +
-      `• Views: ${note.views || 0} students\n` +
-      `• Status: ${note.is_active === false ? '🚫 Inactive' : '✅ Active'}\n` +
-      `• Location: ${folder?.name || 'Unknown'} → ${category?.name || 'Unknown'}\n` +
-      `• Uploaded: ${uploadedDate}\n\n` +
-      `🛠️ *Management:*`;
-
-    const options = {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '🔄 Regenerate Link', callback_data: `regen_${noteId}` },
-            { text: '🚫 Revoke Access', callback_data: `revoke_${noteId}` }
-          ],
-          [
-            { text: '📤 Share Note', callback_data: `share_${noteId}` },
-            { text: '✏️ Edit Info', callback_data: `edit_${noteId}` }
-          ],
-          [
-            { text: '🗑️ Delete Note', callback_data: `delete_${noteId}` },
-            { text: '⬅️ Back to Notes', callback_data: 'back_to_notes' }
-          ]
-        ]
-      }
-    };
-
-    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown', ...options });
-  } catch (error) {
-    console.error('Error showing note management:', error);
-    await bot.sendMessage(chatId, '❌ Error loading note details.');
-  }
-};
-
-const startUploadFlow = async (chatId, userId) => {
-  try {
-    await FirebaseService.saveUploadState(userId, {
-      state: 'awaiting_note_folder',
-      noteData: {}
-    });
-
-    const folderButtons = Array.from(folders.values()).map(folder => [
-      { text: folder.name, callback_data: `folder_${folder.id}` }
-    ]);
-    
-    folderButtons.push([{ text: '❌ Cancel Upload', callback_data: 'cancel_upload' }]);
-
-    const options = {
-      reply_markup: {
-        inline_keyboard: folderButtons
-      }
-    };
-
-    await bot.sendMessage(chatId,
-      `📤 *Upload New Note - Step 1/4*\n\n` +
-      `📁 *Select Folder:*\n\n` +
-      `Choose where to organize this note:`,
-      { parse_mode: 'Markdown', ...options }
-    );
-  } catch (error) {
-    console.error('Error starting upload flow:', error);
-    await bot.sendMessage(chatId, '❌ Error starting upload process.');
-  }
-};
-
-const createShareMessage = (note) => {
-  const message =
-    `🌟 **New Study Material Available!**\n\n` +
-    `${note.description}\n\n` +
-    `All Rights Reserved!\n` +
-    `©Freshman Academy 📚`;
-
+  const stats = await FirebaseService.getStats();
+  const message = `🤖 *Dashboard*\n\nNotes: ${stats.activeNotes}\nUsers: ${stats.totalUsers}`;
   const options = {
     reply_markup: {
       inline_keyboard: [
-        [{ text: '🔓 Open Tutorial Now', callback_data: `open_${note.id}` }]
+        [{ text: '📚 View My Notes', callback_data: 'admin_view_notes' }],
+        [{ text: '📤 Upload New Note', callback_data: 'admin_upload_note' }],
+        [{ text: '📁 Manage Folders', callback_data: 'admin_manage_folders' }],
+        [{ text: '⚡ Bulk Operations', callback_data: 'admin_bulk_ops' }]
       ]
     }
   };
-
-  return { message, options };
+  await bot.sendMessage(chatId, message, { parse_mode: 'Markdown', ...options });
 };
 
-const shareNoteToGroups = async (chatId, noteId) => {
-  try {
-    const note = await FirebaseService.getNote(noteId);
-
-    if (!note) {
-      await bot.sendMessage(chatId, '❌ Note not found.');
-      return;
+const showNotesList = async (chatId, userId) => {
+  const userNotes = await FirebaseService.getAdminNotes(userId);
+  if (userNotes.length === 0) {
+    await bot.sendMessage(chatId, `No notes found. Upload one!`, {
+      reply_markup: { inline_keyboard: [[{ text: '📤 Upload Note', callback_data: 'admin_upload_note' }]] }
+    });
+    return;
+  }
+  let message = `📚 *Your Notes (${userNotes.length})*\n\n`;
+  userNotes.slice(0, 10).forEach((note, i) => message += `${i+1}. ${note.title}\n`);
+  
+  await bot.sendMessage(chatId, message, {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '📤 Upload New', callback_data: 'admin_upload_note' }],
+        [{ text: '⬅️ Back', callback_data: 'back_to_dashboard' }]
+      ]
     }
+  });
+};
 
-    const { message, options } = createShareMessage(note);
+const showNoteManagement = async (chatId, noteId) => {
+  const note = await FirebaseService.getNote(noteId);
+  if (!note) {
+    await bot.sendMessage(chatId, '❌ Note not found.');
+    return;
+  }
+  const message = `📖 *${note.title}*\nStatus: ${note.is_active ? 'Active' : 'Inactive'}`;
+  const options = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🗑️ Delete', callback_data: `delete_${noteId}` }, { text: '📤 Share', callback_data: `share_${noteId}` }],
+        [{ text: '⬅️ Back', callback_data: 'back_to_notes' }]
+      ]
+    }
+  };
+  await bot.sendMessage(chatId, message, { parse_mode: 'Markdown', ...options });
+};
 
-    await bot.sendMessage(chatId,
-      `📤 *Share This Message*\n\n` +
-      `Copy and paste this to your groups:\n\n` +
-      `---\n` +
-      `${message}\n` +
-      `---`,
+const startUploadFlow = async (chatId, userId) => {
+  // Clear any existing state first
+  await FirebaseService.deleteUploadState(userId);
+  
+  await FirebaseService.saveUploadState(userId, {
+    state: 'awaiting_note_folder',
+    noteData: {}
+  });
+
+  const folderButtons = Array.from(folders.values()).map(folder => [
+    { text: folder.name, callback_data: `folder_${folder.id}` }
+  ]);
+  
+  folderButtons.push([{ text: '❌ Cancel Upload', callback_data: 'cancel_upload' }]);
+
+  await bot.sendMessage(chatId,
+    `📤 *Upload New Note - Step 1/4*\n\n📁 *Select Folder:*`,
+    { parse_mode: 'Markdown', reply_markup: { inline_keyboard: folderButtons } }
+  );
+};
+
+// ========== LOGIC HANDLERS ========== //
+
+const handleFolderSelection = async (chatId, userId, folderId) => {
+  // 1. Check if folder exists
+  const folder = folders.get(folderId);
+  if (!folder) {
+    await bot.sendMessage(chatId, "❌ Invalid folder selected.");
+    return;
+  }
+
+  // 2. Check User State
+  const uploadState = await FirebaseService.getUploadState(userId);
+  
+  // 3. 🚨 FIX: Add explicit error handling if state is lost
+  if (!uploadState || uploadState.state !== 'awaiting_note_folder') {
+    await bot.sendMessage(chatId, 
+      "⚠️ **Session Expired**\n\nPlease click '📤 Upload Note' to start again.", 
       { parse_mode: 'Markdown' }
     );
-
-    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown', ...options });
-  } catch (error) {
-    console.error('Error sharing note:', error);
-    await bot.sendMessage(chatId, '❌ Error sharing note.');
+    return;
   }
+
+  // 4. Update State
+  uploadState.noteData.folder = folderId;
+  uploadState.state = 'awaiting_note_category';
+  await FirebaseService.saveUploadState(userId, uploadState);
+
+  // 5. Show Categories
+  const folderCategories = Array.from(categories.values()).filter(cat => cat.folder === folderId);
+  const categoryButtons = folderCategories.map(cat => [{ text: cat.name, callback_data: `category_${cat.id}` }]);
+  categoryButtons.push([{ text: '❌ Cancel', callback_data: 'cancel_upload' }]);
+
+  await bot.sendMessage(chatId,
+    `🎯 *Step 2/4 - Select Category*\n\nSelected: ${folder.name}\nChoose a category:`,
+    { parse_mode: 'Markdown', reply_markup: { inline_keyboard: categoryButtons } }
+  );
 };
 
-// ========== HANDLERS ========== //
-
-const handleStart = async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
+const handleCategorySelection = async (chatId, userId, categoryId) => {
+  const uploadState = await FirebaseService.getUploadState(userId);
   
-  console.log(`🚀 Start command from user ${userId}`);
-
-  try {
-    const userData = {
-      id: userId,
-      username: msg.from.username || '',
-      firstName: msg.from.first_name || 'User',
-      isAdmin: ADMIN_IDS.includes(userId),
-      startedBot: true
-    };
-
-    await FirebaseService.saveUser(userData);
-
-    if (ADMIN_IDS.includes(userId)) {
-      await showAdminDashboard(chatId);
-    } else {
-      await bot.sendMessage(chatId,
-        `🎓 *Welcome to JU Study Materials!*\n\n` +
-        `Access approved study notes and resources.\n\n` +
-        `You must start the bot to access materials.`,
-        { parse_mode: 'Markdown' }
-      );
-      await showMainMenu(chatId, userId);
-    }
-  } catch (error) {
-    console.error('Error in start command:', error);
-    await bot.sendMessage(chatId, '❌ Error initializing. Please try again.');
+  if (!uploadState || uploadState.state !== 'awaiting_note_category') {
+    await bot.sendMessage(chatId, "⚠️ **Session Expired**\n\nPlease start again.");
+    return;
   }
+
+  uploadState.noteData.category = categoryId;
+  uploadState.state = 'awaiting_note_title';
+  await FirebaseService.saveUploadState(userId, uploadState);
+
+  await bot.sendMessage(chatId,
+    `🏷️ *Step 3/4 - Note Title*\n\nPlease type the title of your note:`,
+    { parse_mode: 'Markdown' }
+  );
 };
+
+// ========== MAIN HANDLERS ========== //
 
 const handleMessage = async (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
   const text = msg.text;
 
-  console.log(`📨 Message from ${userId}: ${text}`);
-
   if (!text) return;
 
-  try {
-    // Check upload state first
-    const uploadState = await FirebaseService.getUploadState(userId);
-    if (uploadState) {
-      if (uploadState.state === 'awaiting_note_title') {
-        uploadState.noteData.title = text;
-        uploadState.state = 'awaiting_note_description';
-        await FirebaseService.saveUploadState(userId, uploadState);
-        
-        await bot.sendMessage(chatId,
-          `📝 *Step 3/4 - Note Description*\n\n` +
-          `Enter a description for your note:\n\n` +
-          `You can use formatting like:\n` +
-          `• Hashtags: #Chemistry #Science\n` +
-          `• Emojis: 📚 🔬\n` +
-          `• Multiple lines\n\n` +
-          `*Example:*\n` +
-          `"📚 General #Chemistry\n\n` +
-          `📚 Chapter One - Essential Ideas In Chemistry\n` +
-          `• Chemistry as Experimental Science\n` +
-          `• Properties of Matter\n\n` +
-          `All Rights Reserved!\n` +
-          `©Freshman Academy 📚"`,
-          { parse_mode: 'Markdown' }
-        );
-        return;
-      }
-      else if (uploadState.state === 'awaiting_note_description') {
-        uploadState.noteData.description = text;
-        uploadState.state = 'awaiting_note_file';
-        await FirebaseService.saveUploadState(userId, uploadState);
-        
-        await bot.sendMessage(chatId,
-          `📎 *Step 4/4 - Upload HTML File*\n\n` +
-          `🎉 Almost done! Now send me the HTML file.\n\n` +
-          `*How to upload:*\n` +
-          `1. Click the 📎 paperclip icon\n` +
-          `2. Select "Document" (or File)\n` +
-          `3. Choose your .html file\n` +
-          `4. Send it to me\n\n` +
-          `I'll handle the rest automatically! 🚀`,
-          { parse_mode: 'Markdown' }
-        );
-        return;
-      }
-    }
+  const uploadState = await FirebaseService.getUploadState(userId);
 
-    // Process normal commands
-    if (text.startsWith('/')) {
-      switch (text) {
-        case '/start': await handleStart(msg); break;
-        case '/admin': 
-          if (ADMIN_IDS.includes(userId)) await showAdminDashboard(chatId);
-          break;
-        case '/test': await testButtons(chatId); break;
-        default: await showMainMenu(chatId, userId);
-      }
-    } else {
-      switch (text) {
-        case '📚 My Notes':
-          if (ADMIN_IDS.includes(userId)) await showNotesList(chatId, userId);
-          break;
-        case '📤 Upload Note':
-          if (ADMIN_IDS.includes(userId)) await startUploadFlow(chatId, userId);
-          break;
-        case '📁 Folders':
-          if (ADMIN_IDS.includes(userId)) await showFolderManagement(chatId);
-          break;
-        case '📊 Statistics':
-          if (ADMIN_IDS.includes(userId)) await showStatistics(chatId);
-          break;
-        case '🛠️ Test Buttons': await testButtons(chatId); break;
-        default: await showMainMenu(chatId, userId);
-      }
+  // Handle Text Inputs for Upload Flow
+  if (uploadState) {
+    if (uploadState.state === 'awaiting_note_title') {
+      uploadState.noteData.title = text;
+      uploadState.state = 'awaiting_note_description';
+      await FirebaseService.saveUploadState(userId, uploadState);
+      await bot.sendMessage(chatId, `📝 *Step 3/4 - Description*\n\nEnter a description:`, { parse_mode: 'Markdown' });
+      return;
+    } 
+    else if (uploadState.state === 'awaiting_note_description') {
+      uploadState.noteData.description = text;
+      uploadState.state = 'awaiting_note_file';
+      await FirebaseService.saveUploadState(userId, uploadState);
+      await bot.sendMessage(chatId, `📎 *Step 4/4 - File*\n\nPlease upload the .html file now.`, { parse_mode: 'Markdown' });
+      return;
     }
-  } catch (error) {
-    console.error('Message handler error:', error);
-    await bot.sendMessage(chatId, '❌ Error processing message.');
+  }
+
+  // Handle Commands/Menu
+  if (text === '/start') {
+    const userData = {
+      id: userId,
+      firstName: msg.from.first_name || 'User',
+      isAdmin: ADMIN_IDS.includes(userId),
+      startedBot: true
+    };
+    await FirebaseService.saveUser(userData);
+    if (userData.isAdmin) await showAdminDashboard(chatId);
+    else await showMainMenu(chatId, userId);
+  } else if (text === '📤 Upload Note' && ADMIN_IDS.includes(userId)) {
+    await startUploadFlow(chatId, userId);
+  } else if (text === '📚 My Notes' && ADMIN_IDS.includes(userId)) {
+    await showNotesList(chatId, userId);
+  } else if (text === '📁 Folders' && ADMIN_IDS.includes(userId)) {
+    await showFolderManagement(chatId);
+  } else if (text === '🛠️ Test Buttons') {
+    await testButtons(chatId);
   }
 };
 
-// 🛠️ FIXED: Document Handler with REAL Download/Upload
 const handleDocument = async (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
   const document = msg.document;
 
-  console.log(`📎 Document from ${userId}:`, document?.file_name);
+  const uploadState = await FirebaseService.getUploadState(userId);
+  
+  if (uploadState && uploadState.state === 'awaiting_note_file' && document) {
+    if (!document.file_name?.toLowerCase().endsWith('.html')) {
+      await bot.sendMessage(chatId, "❌ Please upload an .html file");
+      return;
+    }
 
-  try {
-    const uploadState = await FirebaseService.getUploadState(userId);
+    const processingMsg = await bot.sendMessage(chatId, "⏳ Processing...");
     
-    if (uploadState && uploadState.state === 'awaiting_note_file' && document) {
-      if (!document.file_name?.toLowerCase().endsWith('.html')) {
-        await bot.sendMessage(chatId,
-          `❌ *Invalid File Type*\n\n` +
-          `Please send an HTML file (.html extension).\n\n` +
-          `Current file: ${document.file_name}`,
-          { parse_mode: 'Markdown' }
-        );
-        return;
-      }
-
-      const processingMsg = await bot.sendMessage(chatId, `⏳ Downloading and processing file...`);
-
-      // 1. Get the download link from Telegram
+    try {
       const fileLink = await bot.getFileLink(document.file_id);
-      
-      // 2. Download the file using native fetch (Node 18+)
       const response = await fetch(fileLink);
       const arrayBuffer = await response.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
 
-      // 3. Generate unique note ID
       const noteId = `note_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      
-      // 4. Upload to Firebase Storage
       const publicUrl = await FirebaseService.uploadHTMLToStorage(buffer, noteId);
 
-      if (!publicUrl) {
-        throw new Error('Failed to upload file to storage');
-      }
-
-      const noteData = {
-        id: noteId,
-        title: uploadState.noteData.title,
-        description: uploadState.noteData.description,
-        folder: uploadState.noteData.folder,
-        category: uploadState.noteData.category,
-        uploadedBy: userId,
-        views: 0,
-        is_active: true,
-        firebase_url: publicUrl,
-        createdAt: admin.firestore.FieldValue.serverTimestamp()
-      };
-
-      // 5. Save metadata to Firestore
-      const noteSaved = await FirebaseService.saveNote(noteData);
-      
-      if (noteSaved) {
+      if (publicUrl) {
+        const noteData = {
+          id: noteId,
+          ...uploadState.noteData,
+          uploadedBy: userId,
+          views: 0,
+          is_active: true,
+          firebase_url: publicUrl,
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        };
+        await FirebaseService.saveNote(noteData);
         await FirebaseService.deleteUploadState(userId);
         await bot.deleteMessage(chatId, processingMsg.message_id);
-
-        await bot.sendMessage(chatId,
-          `✅ *Note Uploaded Successfully!*\n\n` +
-          `📖 *Title:* ${noteData.title}\n` +
-          `📁 *Location:* ${folders.get(noteData.folder)?.name} → ${categories.get(noteData.category)?.name}\n\n` +
-          `🎉 Your note is now live and ready to share!`,
-          { parse_mode: 'Markdown' }
-        );
-
-        await showNoteManagement(chatId, noteData.id);
-      } else {
-        throw new Error('Failed to save note to database');
+        await bot.sendMessage(chatId, "✅ Upload Complete!");
+        await showNoteManagement(chatId, noteId);
       }
-
-    } else {
-      await bot.sendMessage(chatId,
-        `📎 I see you sent a file, but you're not in upload mode.\n\n` +
-        `Use "📤 Upload Note" to start the upload process.`
-      );
+    } catch (e) {
+      console.error(e);
+      await bot.sendMessage(chatId, "❌ Upload Failed: " + e.message);
     }
-  } catch (error) {
-    console.error('Document upload error:', error);
-    await bot.sendMessage(chatId,
-      `❌ *Upload Failed*\n\n` +
-      `Error: ${error.message}\n\n` +
-      `Please try again.`
-    );
   }
 };
 
+const showFolderManagement = async (chatId) => {
+  let message = `📁 *Folder Management*\n\n`;
+  folders.forEach(f => {
+    message += `• ${f.name}\n`;
+    categories.forEach(c => { if(c.folder === f.id) message += `   └ ${c.name}\n`; });
+  });
+  
+  const options = {
+    reply_markup: {
+      inline_keyboard: [
+        // 🚨 THESE BUTTONS NOW HAVE HANDLERS BELOW
+        [{ text: '➕ Add Folder', callback_data: 'add_folder' }],
+        [{ text: '➕ Add Category', callback_data: 'add_category' }],
+        [{ text: '⬅️ Back', callback_data: 'back_to_dashboard' }]
+      ]
+    }
+  };
+  await bot.sendMessage(chatId, message, { parse_mode: 'Markdown', ...options });
+};
+
+// ========== CALLBACK QUERY HANDLER (THE FIX) ========== //
 const handleCallbackQuery = async (callbackQuery) => {
   const message = callbackQuery.message;
   const userId = callbackQuery.from.id;
@@ -725,148 +532,70 @@ const handleCallbackQuery = async (callbackQuery) => {
   const chatId = message.chat.id;
 
   try {
-    // Only answer if we can
-    try { await bot.answerCallbackQuery(callbackQuery.id); } catch (e) {}
+    // Stop the loading animation on the button
+    await bot.answerCallbackQuery(callbackQuery.id);
 
-    if (data.startsWith('test_')) {
-      const testNum = data.replace('test_', '');
-      await bot.sendMessage(chatId, `✅ Test button ${testNum} worked! 🎉`);
+    // 🚨 ROUTING LOGIC
+    if (data.startsWith('folder_')) {
+      await handleFolderSelection(chatId, userId, data.replace('folder_', ''));
+    } 
+    else if (data.startsWith('category_')) {
+      await handleCategorySelection(chatId, userId, data.replace('category_', ''));
     }
-    else if (data === 'admin_view_notes') await showNotesList(chatId, userId);
-    else if (data === 'admin_upload_note') await startUploadFlow(chatId, userId);
-    else if (data === 'admin_manage_folders') await showFolderManagement(chatId);
-    else if (data === 'admin_bulk_ops') await showBulkOperations(chatId);
-    else if (data === 'refresh_notes') await showNotesList(chatId, userId);
-    else if (data === 'back_to_notes') await showNotesList(chatId, userId);
-    else if (data === 'back_to_dashboard') await showAdminDashboard(chatId);
-    else if (data.startsWith('folder_')) await handleFolderSelection(chatId, userId, data.replace('folder_', ''));
-    else if (data.startsWith('category_')) await handleCategorySelection(chatId, userId, data.replace('category_', ''));
-    else if (data.startsWith('regen_')) await regenerateNoteLink(chatId, data.replace('regen_', ''));
-    else if (data.startsWith('revoke_')) await revokeNoteAccess(chatId, data.replace('revoke_', ''));
-    else if (data.startsWith('share_')) await shareNoteToGroups(chatId, data.replace('share_', ''));
-    else if (data.startsWith('open_')) await openNote(chatId, data.replace('open_', ''), userId);
-    else if (data.startsWith('delete_')) await deleteNote(chatId, data.replace('delete_', ''), userId);
+    // 🚨 FIX: Added Handlers for Add Folder/Category
+    else if (data === 'add_folder' || data === 'add_category') {
+      await bot.sendMessage(chatId, "⚠️ Dynamic folder creation is coming soon!\n\nFor now, please use the standard folders provided.");
+    }
     else if (data === 'cancel_upload') {
       await FirebaseService.deleteUploadState(userId);
-      await bot.sendMessage(chatId, '❌ Upload cancelled.');
+      await bot.sendMessage(chatId, "❌ Upload cancelled.");
       await showAdminDashboard(chatId);
+    }
+    // Admin Navigation
+    else if (data === 'admin_upload_note') await startUploadFlow(chatId, userId);
+    else if (data === 'admin_view_notes') await showNotesList(chatId, userId);
+    else if (data === 'admin_manage_folders') await showFolderManagement(chatId);
+    else if (data === 'admin_bulk_ops') await bot.sendMessage(chatId, "⚡ Feature coming soon.");
+    else if (data === 'back_to_dashboard') await showAdminDashboard(chatId);
+    
+    // Note Actions
+    else if (data.startsWith('delete_')) {
+      await FirebaseService.deleteNote(data.replace('delete_', ''));
+      await bot.sendMessage(chatId, "🗑️ Note deleted.");
+      await showNotesList(chatId, userId);
+    }
+    else if (data.startsWith('share_')) {
+      const noteId = data.replace('share_', '');
+      const note = await FirebaseService.getNote(noteId);
+      if(note) await bot.sendMessage(chatId, `Copy to share:\n\n${note.title}\n${note.description}\n\n[Link](${note.firebase_url})`, {parse_mode: 'Markdown'});
+    }
+    // Test
+    else if (data.startsWith('test_')) {
+      await bot.sendMessage(chatId, `✅ Button ${data} works!`);
     }
 
   } catch (error) {
     console.error('Callback error:', error);
-    await bot.sendMessage(chatId, '❌ Error processing button');
+    await bot.sendMessage(chatId, "❌ An error occurred processing that button.");
   }
 };
 
-// Helper Functions
 const testButtons = async (chatId) => {
-  const options = {
+  await bot.sendMessage(chatId, "🧪 Test Panel", {
     reply_markup: {
-      inline_keyboard: [
-        [{ text: "🔄 Test Button 1", callback_data: "test_1" }],
-        [{ text: "📚 View Notes", callback_data: "admin_view_notes" }]
-      ]
+      inline_keyboard: [[{ text: "Test 1", callback_data: "test_1" }]]
     }
-  };
-  await bot.sendMessage(chatId, "🧪 **Button Test Panel**", { parse_mode: 'Markdown', ...options });
-};
-
-const showFolderManagement = async (chatId) => {
-  let message = `📁 *Folder Management*\n\n`;
-  folders.forEach(folder => {
-    message += `${folder.name}\n`;
-    categories.forEach(cat => {
-      if (cat.folder === folder.id) message += `  └─ ${cat.name}\n`;
-    });
-    message += `\n`;
   });
-  const options = { reply_markup: { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'back_to_dashboard' }]] } };
-  await bot.sendMessage(chatId, message, { parse_mode: 'Markdown', ...options });
 };
 
-const showBulkOperations = async (chatId) => {
-  const options = { reply_markup: { inline_keyboard: [[{ text: '⬅️ Back', callback_data: 'back_to_dashboard' }]] } };
-  await bot.sendMessage(chatId, "⚡ Bulk Operations are not yet implemented.", options);
-};
-
-const showStatistics = async (chatId) => {
-  const stats = await FirebaseService.getStats();
-  const message = `📊 *System Stats*\n\nUsers: ${stats.totalUsers}\nNotes: ${stats.totalNotes}`;
-  await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-};
-
-const handleFolderSelection = async (chatId, userId, folderId) => {
-  const uploadState = await FirebaseService.getUploadState(userId);
-  if (uploadState && uploadState.state === 'awaiting_note_folder') {
-    uploadState.noteData.folder = folderId;
-    uploadState.state = 'awaiting_note_category';
-    await FirebaseService.saveUploadState(userId, uploadState);
-
-    const folderCategories = Array.from(categories.values()).filter(cat => cat.folder === folderId);
-    const categoryButtons = folderCategories.map(cat => [{ text: cat.name, callback_data: `category_${cat.id}` }]);
-    categoryButtons.push([{ text: '❌ Cancel', callback_data: 'cancel_upload' }]);
-
-    await bot.sendMessage(chatId, `🎯 Select Category:`, { reply_markup: { inline_keyboard: categoryButtons } });
-  }
-};
-
-const handleCategorySelection = async (chatId, userId, categoryId) => {
-  const uploadState = await FirebaseService.getUploadState(userId);
-  if (uploadState && uploadState.state === 'awaiting_note_category') {
-    uploadState.noteData.category = categoryId;
-    uploadState.state = 'awaiting_note_title';
-    await FirebaseService.saveUploadState(userId, uploadState);
-    await bot.sendMessage(chatId, `🏷️ Enter Note Title:`);
-  }
-};
-
-const regenerateNoteLink = async (chatId, noteId) => {
-  const newNoteId = `note_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  // Note: We don't actually move the file in storage here, just changing the URL reference in DB
-  // In a real app, you might want to re-upload or copy the file. 
-  // For now, we assume the URL is what matters.
-  await bot.sendMessage(chatId, `⚠️ To regenerate the link properly, please re-upload the note.`);
-};
-
-const revokeNoteAccess = async (chatId, noteId) => {
-  await FirebaseService.updateNote(noteId, { is_active: false });
-  await bot.sendMessage(chatId, `🚫 Access Revoked.`);
-  await showNoteManagement(chatId, noteId);
-};
-
-const openNote = async (chatId, noteId, userId) => {
-  const note = await FirebaseService.getNote(noteId);
-  if (!note || note.is_active === false) {
-    await bot.sendMessage(chatId, `🚫 Unavailable.`);
-    return;
-  }
-  const user = await FirebaseService.getUser(userId);
-  if (!user || !user.startedBot) {
-    await bot.sendMessage(chatId, `🔒 Please start the bot first.`);
-    return;
-  }
-  await FirebaseService.updateNote(noteId, { views: (note.views || 0) + 1 });
-  await bot.sendMessage(chatId, `📚 Opening...`, { reply_markup: { inline_keyboard: [[{ text: '🔓 Open', url: note.firebase_url }]] } });
-};
-
-const deleteNote = async (chatId, noteId, userId) => {
-  await FirebaseService.deleteNote(noteId);
-  await bot.sendMessage(chatId, `🗑️ Deleted.`);
-  await showNotesList(chatId, userId);
-};
-
-// ========== VERCEL ENTRY POINT ========== //
+// ========== SERVER ENTRY POINT ========== //
 module.exports = async (req, res) => {
-  // Ensure services are ready
-  if (!initializeServices()) {
-    return res.status(500).json({ error: 'Failed to initialize services' });
-  }
+  if (!initializeServices()) return res.status(500).json({ error: 'Init failed' });
 
-  // Handle CORS
+  // CORS Headers
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
@@ -881,11 +610,10 @@ module.exports = async (req, res) => {
       }
       return res.status(200).json({ ok: true });
     } catch (error) {
-      console.error('Webhook error:', error);
+      console.error(error);
       return res.status(500).json({ error: error.message });
     }
   }
 
-  return res.status(200).json({ status: 'Online', time: new Date().toISOString() });
+  return res.status(200).json({ status: 'Online' });
 };
-
