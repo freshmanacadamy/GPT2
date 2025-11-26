@@ -1,6 +1,5 @@
 const TelegramBot = require('node-telegram-bot-api');
 const { put } = require('@vercel/blob');
-const { get, set } = require('@vercel/edge-config');
 
 // 🛡️ GLOBAL ERROR HANDLER
 process.on('unhandledRejection', (error) => {
@@ -21,20 +20,16 @@ if (!BOT_TOKEN) {
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: false });
 
-// ========== EDGE CONFIG STORAGE SERVICE ========== //
+// ========== SIMPLE IN-MEMORY + BLOB STORAGE ========== //
+// Store metadata in memory (resets on cold start) but files in Blob (persistent)
+let notes = new Map();
+let uploadStates = new Map();
+
 const StorageService = {
   async saveNote(noteData) {
     try {
-      // Get current notes from Edge Config
-      const currentNotes = (await get('notes')) || {};
-      
-      // Add new note
-      currentNotes[noteData.id] = noteData;
-      
-      // Save back to Edge Config
-      await set('notes', currentNotes);
-      
-      console.log('💾 Note saved to Edge Config:', noteData.id);
+      notes.set(noteData.id, noteData);
+      console.log('💾 Note saved to memory:', noteData.id);
       return true;
     } catch (error) {
       console.error('Save note error:', error);
@@ -43,31 +38,19 @@ const StorageService = {
   },
 
   async getNote(noteId) {
-    try {
-      const notes = (await get('notes')) || {};
-      return notes[noteId] || null;
-    } catch (error) {
-      console.error('Get note error:', error);
-      return null;
-    }
+    return notes.get(noteId) || null;
   },
 
   async getAdminNotes(userId) {
-    try {
-      const notes = (await get('notes')) || {};
-      const userNotes = Object.values(notes).filter(note => note.uploadedBy === userId);
-      return userNotes.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    } catch (error) {
-      console.error('Get admin notes error:', error);
-      return [];
-    }
+    const userNotes = Array.from(notes.values())
+      .filter(note => note.uploadedBy === userId)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    return userNotes;
   },
 
   async saveUploadState(userId, stateData) {
     try {
-      const currentStates = (await get('upload_states')) || {};
-      currentStates[userId] = stateData;
-      await set('upload_states', currentStates);
+      uploadStates.set(userId, stateData);
       return true;
     } catch (error) {
       console.error('Save state error:', error);
@@ -76,38 +59,20 @@ const StorageService = {
   },
 
   async getUploadState(userId) {
-    try {
-      const states = (await get('upload_states')) || {};
-      return states[userId] || null;
-    } catch (error) {
-      console.error('Get state error:', error);
-      return null;
-    }
+    return uploadStates.get(userId) || null;
   },
 
   async deleteUploadState(userId) {
-    try {
-      const states = (await get('upload_states')) || {};
-      delete states[userId];
-      await set('upload_states', states);
-      return true;
-    } catch (error) {
-      console.error('Delete state error:', error);
-      return false;
-    }
+    uploadStates.delete(userId);
+    return true;
   },
 
   async getStats() {
-    try {
-      const notes = (await get('notes')) || {};
-      const totalNotes = Object.keys(notes).length;
-      const activeNotes = Object.values(notes).filter(note => note.is_active !== false).length;
-      const totalViews = Object.values(notes).reduce((sum, note) => sum + (note.views || 0), 0);
-      
-      return { totalNotes, activeNotes, totalViews };
-    } catch (error) {
-      return { totalNotes: 0, activeNotes: 0, totalViews: 0 };
-    }
+    const totalNotes = notes.size;
+    const activeNotes = Array.from(notes.values()).filter(note => note.is_active !== false).length;
+    const totalViews = Array.from(notes.values()).reduce((sum, note) => sum + (note.views || 0), 0);
+    
+    return { totalNotes, activeNotes, totalViews };
   }
 };
 
@@ -115,13 +80,15 @@ const StorageService = {
 const BlobService = {
   async uploadHTML(htmlContent, fileName) {
     try {
+      console.log('📤 Uploading to Blob Storage:', fileName);
       const { url } = await put(fileName, htmlContent, {
         access: 'public',
         contentType: 'text/html'
       });
+      console.log('✅ Blob upload successful:', url);
       return url;
     } catch (error) {
-      console.error('Blob upload error:', error);
+      console.error('❌ Blob upload error:', error);
       return null;
     }
   }
@@ -136,11 +103,11 @@ const handleStart = async (msg) => {
     const stats = await StorageService.getStats();
     
     await bot.sendMessage(chatId,
-      `🤖 *Notes Bot - Edge Config + Blob*\n\n` +
-      `💾 Storage: Vercel Edge Config\n` +
-      `📁 Files: Vercel Blob Storage\n` +
-      `📊 Notes: ${stats.totalNotes} total, ${stats.activeNotes} active\n\n` +
-      `✅ 100% FREE Solution\n\n` +
+      `🤖 *Notes Bot - Blob Storage*\n\n` +
+      `💾 Metadata: Memory (resets on restart)\n` +
+      `📁 Files: Vercel Blob Storage (persistent)\n` +
+      `📊 Notes: ${stats.totalNotes} total\n\n` +
+      `✅ Files are permanently stored\n\n` +
       `Choose an action:`,
       {
         parse_mode: 'Markdown',
@@ -148,7 +115,7 @@ const handleStart = async (msg) => {
           inline_keyboard: [
             [{ text: '📤 Upload HTML File', callback_data: 'upload_html' }],
             [{ text: `📚 View Notes (${stats.totalNotes})`, callback_data: 'view_notes' }],
-            [{ text: '🧪 Test Storage', callback_data: 'test_storage' }]
+            [{ text: '🧪 Test Upload', callback_data: 'test_upload' }]
           ]
         }
       }
@@ -156,8 +123,7 @@ const handleStart = async (msg) => {
   } else {
     await bot.sendMessage(chatId, 
       `🎓 *Study Materials*\n\n` +
-      `Access notes shared by your instructors.\n\n` +
-      `Contact admin for access.`,
+      `Access notes shared by your instructors.`,
       { parse_mode: 'Markdown' }
     );
   }
@@ -172,7 +138,7 @@ const startUploadFlow = async (chatId, userId) => {
   await bot.sendMessage(chatId,
     `📤 *Upload HTML File*\n\n` +
     `Please send me an HTML file now!\n\n` +
-    `I'll store it in Vercel Blob Storage.`,
+    `I'll store it permanently in Vercel Blob Storage.`,
     { parse_mode: 'Markdown' }
   );
 };
@@ -182,7 +148,12 @@ const handleDocument = async (msg) => {
   const userId = msg.from.id;
   const document = msg.document;
 
-  if (!ADMIN_IDS.includes(userId)) return;
+  console.log('📎 Document received:', document?.file_name);
+
+  if (!ADMIN_IDS.includes(userId)) {
+    await bot.sendMessage(chatId, '❌ Admin access required.');
+    return;
+  }
 
   const uploadState = await StorageService.getUploadState(userId);
   
@@ -192,32 +163,42 @@ const handleDocument = async (msg) => {
     if (isHTML) {
       try {
         // Show processing message
-        const processingMsg = await bot.sendMessage(chatId, `⏳ Downloading file from Telegram...`);
+        const processingMsg = await bot.sendMessage(chatId, `⏳ Step 1: Downloading from Telegram...`);
         
-        // Get file from Telegram
+        // Step 1: Get file from Telegram
+        console.log('🔹 Step 1: Downloading from Telegram...');
         const fileLink = await bot.getFileLink(document.file_id);
         const response = await fetch(fileLink);
-        const htmlContent = await response.text();
         
-        // Upload to Vercel Blob Storage
-        await bot.editMessageText(`⏳ Uploading to Blob Storage...`, {
+        if (!response.ok) {
+          throw new Error(`Telegram download failed: ${response.status}`);
+        }
+        
+        const htmlContent = await response.text();
+        console.log('✅ Downloaded:', htmlContent.length, 'bytes');
+        
+        // Step 2: Upload to Blob Storage
+        await bot.editMessageText(`⏳ Step 2: Uploading to Blob Storage...`, {
           chat_id: chatId,
           message_id: processingMsg.message_id
         });
         
+        console.log('🔹 Step 2: Uploading to Blob...');
         const fileName = `notes/${Date.now()}_${document.file_name}`;
         const blobUrl = await BlobService.uploadHTML(htmlContent, fileName);
         
         if (!blobUrl) {
-          throw new Error('Failed to upload to Blob Storage');
+          throw new Error('Blob Storage upload failed');
         }
+        console.log('✅ Blob URL:', blobUrl);
         
-        // Save note metadata to Edge Config
-        await bot.editMessageText(`⏳ Saving note metadata...`, {
+        // Step 3: Save metadata
+        await bot.editMessageText(`⏳ Step 3: Saving note info...`, {
           chat_id: chatId,
           message_id: processingMsg.message_id
         });
         
+        console.log('🔹 Step 3: Saving metadata...');
         const noteId = `note_${Date.now()}`;
         const noteData = {
           id: noteId,
@@ -238,14 +219,15 @@ const handleDocument = async (msg) => {
           await StorageService.deleteUploadState(userId);
           await bot.deleteMessage(chatId, processingMsg.message_id);
           
+          console.log('✅ Upload completed successfully');
+          
           await bot.sendMessage(chatId,
             `✅ *Upload Successful!*\n\n` +
             `📁 File: ${document.file_name}\n` +
             `📦 Size: ${(document.file_size / 1024).toFixed(2)} KB\n` +
-            `🔗 URL: ${blobUrl}\n\n` +
-            `💾 Metadata: Edge Config\n` +
-            `📁 Storage: Blob Storage\n\n` +
-            `🎉 File saved successfully!`,
+            `🔗 Permanent URL: ${blobUrl}\n\n` +
+            `🎉 File is now permanently stored!\n\n` +
+            `Share this URL with students: ${blobUrl}`,
             { parse_mode: 'Markdown' }
           );
         } else {
@@ -253,9 +235,11 @@ const handleDocument = async (msg) => {
         }
 
       } catch (error) {
+        console.error('❌ Upload error:', error);
         await bot.sendMessage(chatId,
           `❌ *Upload Failed*\n\n` +
-          `Error: ${error.message}`,
+          `Error: ${error.message}\n\n` +
+          `Please try again.`,
           { parse_mode: 'Markdown' }
         );
       }
@@ -267,6 +251,11 @@ const handleDocument = async (msg) => {
         { parse_mode: 'Markdown' }
       );
     }
+  } else {
+    await bot.sendMessage(chatId,
+      `📎 Please start upload first by clicking "Upload HTML File"`,
+      { parse_mode: 'Markdown' }
+    );
   }
 };
 
@@ -276,7 +265,7 @@ const showNotesList = async (chatId, userId) => {
   if (userNotes.length === 0) {
     await bot.sendMessage(chatId,
       `📚 *No Notes Yet*\n\n` +
-      `Upload your first HTML file using the button below!`,
+      `Upload your first HTML file!`,
       {
         parse_mode: 'Markdown',
         reply_markup: {
@@ -293,37 +282,39 @@ const showNotesList = async (chatId, userId) => {
   
   userNotes.forEach((note, index) => {
     message += `${index + 1}. ${note.title}\n`;
-    message += `   📦 ${(note.file_size / 1024).toFixed(2)} KB • 👀 ${note.views} views\n`;
+    message += `   📦 ${(note.file_size / 1024).toFixed(2)} KB\n`;
     message += `   🔗 ${note.blob_url ? '✅ Stored' : '❌ Missing'}\n\n`;
   });
+
+  message += `💡 *Note:* Metadata resets on server restart, but files remain in Blob Storage.`;
 
   await bot.sendMessage(chatId, message, { 
     parse_mode: 'Markdown',
     reply_markup: {
       inline_keyboard: [
         [{ text: '📤 Upload New Note', callback_data: 'upload_html' }],
-        [{ text: '🔄 Refresh List', callback_data: 'view_notes' }]
+        [{ text: '🔄 Refresh', callback_data: 'view_notes' }]
       ]
     }
   });
 };
 
-const testStorage = async (chatId) => {
+const testUpload = async (chatId) => {
   try {
-    // Test Edge Config
-    await StorageService.saveUploadState('test', { test: true });
-    const testState = await StorageService.getUploadState('test');
+    // Test Blob Storage with a small HTML
+    const testHTML = `<html><body><h1>Test File</h1><p>Blob Storage Test</p></body></html>`;
+    const testUrl = await BlobService.uploadHTML(testHTML, `test-${Date.now()}.html`);
     
     await bot.sendMessage(chatId,
-      `🧪 *Storage Test Results*\n\n` +
-      `🔹 Edge Config: ${testState ? '✅ Working' : '❌ Failed'}\n` +
-      `🔹 Blob Storage: ✅ Available\n\n` +
-      `🎉 Both storage systems are ready!`,
+      `🧪 *Upload Test Results*\n\n` +
+      `🔹 Blob Storage: ${testUrl ? '✅ Working' : '❌ Failed'}\n` +
+      `🔹 Test URL: ${testUrl || 'None'}\n\n` +
+      `🎉 Blob Storage is ready for uploads!`,
       { parse_mode: 'Markdown' }
     );
   } catch (error) {
     await bot.sendMessage(chatId,
-      `❌ *Storage Test Failed*\n\n` +
+      `❌ *Test Failed*\n\n` +
       `Error: ${error.message}`,
       { parse_mode: 'Markdown' }
     );
@@ -343,8 +334,8 @@ const handleCallbackQuery = async (callbackQuery) => {
       await startUploadFlow(chatId, userId);
     } else if (data === 'view_notes') {
       await showNotesList(chatId, userId);
-    } else if (data === 'test_storage') {
-      await testStorage(chatId);
+    } else if (data === 'test_upload') {
+      await testUpload(chatId);
     }
 
   } catch (error) {
@@ -373,10 +364,10 @@ module.exports = async (req, res) => {
   if (req.method === 'GET') {
     const stats = await StorageService.getStats();
     return res.status(200).json({
-      status: '🟢 Edge+Blob Notes Bot Online',
+      status: '🟢 Blob Notes Bot Online',
       storage: {
-        edge_config: 'Active',
-        blob_storage: 'Active'
+        blob_storage: 'Active',
+        memory_storage: 'Active (resets on cold start)'
       },
       stats: stats,
       timestamp: new Date().toISOString()
@@ -386,6 +377,7 @@ module.exports = async (req, res) => {
   if (req.method === 'POST') {
     try {
       const update = req.body;
+      console.log('📦 Update received');
       
       if (update.message) {
         if (update.message.text) await handleMessage(update.message);
@@ -404,7 +396,6 @@ module.exports = async (req, res) => {
   return res.status(405).json({ error: 'Method not allowed' });
 };
 
-console.log('✅ Edge+Blob Notes Bot Started!');
-console.log('💾 Storage: Edge Config + Blob Storage');
-console.log('💰 Cost: 100% FREE');
-console.log('🚀 Ready for production!');
+console.log('✅ Blob Notes Bot Started!');
+console.log('📁 Storage: Blob Storage (persistent) + Memory (temp)');
+console.log('🚀 Ready for uploads!');
