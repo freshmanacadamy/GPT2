@@ -20,7 +20,6 @@ if (!BOT_TOKEN) {
 const bot = new TelegramBot(BOT_TOKEN, { polling: false });
 
 // ========== SIMPLE IN-MEMORY STORAGE ========== //
-// Uses global to persist between function calls in same instance
 global.notesStorage = global.notesStorage || new Map();
 global.uploadStatesStorage = global.uploadStatesStorage || new Map();
 
@@ -84,14 +83,13 @@ const handleStart = async (msg) => {
     const stats = await StorageService.getStats();
     
     await bot.sendMessage(chatId,
-      `🤖 *Notes Bot - Direct Links*\n\n` +
+      `🤖 Notes Bot - Direct Links\n\n` +
       `💾 Storage: Telegram File Server\n` +
       `📊 Notes: ${stats.totalNotes} total\n\n` +
       `✅ Files stored on Telegram servers\n` +
       `🔗 Direct links that always work\n\n` +
       `Choose an action:`,
       {
-        parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
             [{ text: '📤 Upload HTML File', callback_data: 'upload_html' }],
@@ -103,10 +101,9 @@ const handleStart = async (msg) => {
     );
   } else {
     await bot.sendMessage(chatId, 
-      `🎓 *Study Materials*\n\n` +
+      `🎓 Study Materials\n\n` +
       `Access notes shared by your instructors.\n\n` +
-      `Contact admin for access.`,
-      { parse_mode: 'Markdown' }
+      `Contact admin for access.`
     );
   }
 };
@@ -118,10 +115,9 @@ const startUploadFlow = async (chatId, userId) => {
   });
 
   await bot.sendMessage(chatId,
-    `📤 *Upload HTML File*\n\n` +
+    `📤 Upload HTML File\n\n` +
     `Please send me an HTML file now!\n\n` +
-    `I'll create a direct link that students can access.`,
-    { parse_mode: 'Markdown' }
+    `I'll create a direct link that students can access.`
   );
 };
 
@@ -154,13 +150,14 @@ const handleDocument = async (msg) => {
         
         // Create note with direct Telegram link
         const noteId = `note_${Date.now()}`;
+        const noteTitle = document.file_name.replace('.html', '');
         const noteData = {
           id: noteId,
-          title: document.file_name.replace('.html', ''),
-          description: `📚 ${document.file_name.replace('.html', '')}\n\nUploaded via Telegram Bot\n\nAll Rights Reserved!\n©Freshman Academy 📚`,
+          title: noteTitle,
+          description: `📚 ${noteTitle}\n\nUploaded via Telegram Bot\n\nAll Rights Reserved!\n©Freshman Academy 📚`,
           file_name: document.file_name,
           file_size: document.file_size,
-          telegram_file_url: fileLink, // Direct Telegram URL
+          telegram_file_url: fileLink,
           uploadedBy: userId,
           views: 0,
           is_active: true,
@@ -176,26 +173,23 @@ const handleDocument = async (msg) => {
           
           console.log('✅ Upload completed successfully');
           
-          // Create beautiful share message
+          // Create simple share message without complex formatting
           const shareMessage = 
-            `🌟 **New Study Material Available!**\n\n` +
-            `📚 ${document.file_name.replace('.html', '')}\n\n` +
+            `🌟 New Study Material Available!\n\n` +
+            `📚 ${noteTitle}\n\n` +
             `All Rights Reserved!\n` +
             `©Freshman Academy 📚`;
           
-          // Send success message with direct link
+          // Send success message WITHOUT Markdown parsing
           await bot.sendMessage(chatId,
-            `✅ *Upload Successful!*\n\n` +
+            `✅ Upload Successful!\n\n` +
             `📁 File: ${document.file_name}\n` +
-            `📦 Size: ${(document.file_size / 1024).toFixed(2)} KB\n` +
-            `🔗 Direct Link: ${fileLink}\n\n` +
-            `🎉 File is ready to share!`,
-            { parse_mode: 'Markdown' }
+            `📦 Size: ${(document.file_size / 1024).toFixed(2)} KB\n\n` +
+            `🎉 File is ready to share!`
           );
 
-          // Send the formatted share message with button
+          // Send the formatted share message with button (NO Markdown)
           await bot.sendMessage(chatId, shareMessage, {
-            parse_mode: 'Markdown',
             reply_markup: {
               inline_keyboard: [
                 [{ text: '🔓 Open Tutorial Now', url: fileLink }],
@@ -211,25 +205,22 @@ const handleDocument = async (msg) => {
       } catch (error) {
         console.error('❌ Upload error:', error);
         await bot.sendMessage(chatId,
-          `❌ *Upload Failed*\n\n` +
+          `❌ Upload Failed\n\n` +
           `Error: ${error.message}\n\n` +
-          `Please try again.`,
-          { parse_mode: 'Markdown' }
+          `Please try again.`
         );
       }
     } else {
       await bot.sendMessage(chatId, 
-        `❌ *Wrong File Type*\n\n` +
+        `❌ Wrong File Type\n\n` +
         `Please send an HTML file (.html extension)\n` +
-        `You sent: ${document.file_name}`,
-        { parse_mode: 'Markdown' }
+        `You sent: ${document.file_name}`
       );
     }
   } else {
     await bot.sendMessage(chatId,
       `📎 Please start upload first by clicking "Upload HTML File"`,
       {
-        parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
             [{ text: '📤 Start Upload', callback_data: 'upload_html' }]
@@ -245,10 +236,9 @@ const showNotesList = async (chatId, userId) => {
   
   if (userNotes.length === 0) {
     await bot.sendMessage(chatId,
-      `📚 *No Notes Yet*\n\n` +
+      `📚 No Notes Yet\n\n` +
       `Upload your first HTML file to get started!`,
       {
-        parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
             [{ text: '📤 Upload First Note', callback_data: 'upload_html' }]
@@ -259,7 +249,7 @@ const showNotesList = async (chatId, userId) => {
     return;
   }
 
-  let message = `📚 *Your Notes (${userNotes.length})*\n\n`;
+  let message = `📚 Your Notes (${userNotes.length})\n\n`;
   
   userNotes.forEach((note, index) => {
     message += `${index + 1}. ${note.title}\n`;
@@ -269,7 +259,6 @@ const showNotesList = async (chatId, userId) => {
   });
 
   await bot.sendMessage(chatId, message, { 
-    parse_mode: 'Markdown',
     reply_markup: {
       inline_keyboard: [
         [{ text: '📤 Upload New Note', callback_data: 'upload_html' }],
@@ -287,25 +276,24 @@ const shareNotePreview = async (chatId, noteId) => {
     return;
   }
 
+  // Simple message without Markdown formatting
   const shareMessage = 
-    `🌟 **New Study Material Available!**\n\n` +
-    `${note.description}\n\n` +
+    `🌟 New Study Material Available!\n\n` +
+    `📚 ${note.title}\n\n` +
     `All Rights Reserved!\n` +
     `©Freshman Academy 📚`;
 
-  // Send preview
+  // Send preview WITHOUT Markdown
   await bot.sendMessage(chatId,
-    `📤 *Share This Message*\n\n` +
+    `📤 Share This Message\n\n` +
     `Copy and paste to your groups:\n\n` +
     `---\n` +
     `${shareMessage}\n` +
-    `---`,
-    { parse_mode: 'Markdown' }
+    `---`
   );
 
-  // Send the actual message with button
+  // Send the actual message with button (NO Markdown)
   await bot.sendMessage(chatId, shareMessage, {
-    parse_mode: 'Markdown',
     reply_markup: {
       inline_keyboard: [
         [{ text: '🔓 Open Tutorial Now', url: note.telegram_file_url }]
@@ -319,10 +307,9 @@ const resetStorage = async (chatId) => {
   global.uploadStatesStorage.clear();
   
   await bot.sendMessage(chatId,
-    `🔄 *Storage Reset*\n\n` +
+    `🔄 Storage Reset\n\n` +
     `All notes and upload states have been cleared.\n` +
-    `You can start fresh now!`,
-    { parse_mode: 'Markdown' }
+    `You can start fresh now!`
   );
 };
 
