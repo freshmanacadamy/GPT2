@@ -1,5 +1,6 @@
 const TelegramBot = require('node-telegram-bot-api');
 const admin = require('firebase-admin');
+const fetch = require('node-fetch'); // Assuming node-fetch is available in your environment
 
 // 🛡️ GLOBAL ERROR HANDLER
 process.on('unhandledRejection', (error) => {
@@ -22,10 +23,18 @@ let bot;
 function initializeServices() {
   if (isInitialized) return true;
 
-  if (!BOT_TOKEN || !FIREBASE_PROJECT_ID || !FIREBASE_PRIVATE_KEY || !FIREBASE_CLIENT_EMAIL) {
-    console.error('❌ Missing Environment Variables. Check your Vercel/Serverless configuration.');
-    // Do NOT return false here to allow the / endpoint to respond, but set status to not initialized
-    return false;
+  const requiredVars = {
+    'BOT_TOKEN': BOT_TOKEN,
+    'FIREBASE_PROJECT_ID': FIREBASE_PROJECT_ID,
+    'FIREBASE_PRIVATE_KEY (check formatting)': FIREBASE_PRIVATE_KEY,
+    'FIREBASE_CLIENT_EMAIL': FIREBASE_CLIENT_EMAIL
+  };
+
+  for (const [key, value] of Object.entries(requiredVars)) {
+    if (!value) {
+      console.error(`❌ Missing Environment Variable: ${key}`);
+      return false;
+    }
   }
 
   try {
@@ -50,6 +59,8 @@ function initializeServices() {
     return true;
   } catch (error) {
     console.error('❌ Initialization failed:', error);
+    // Log the specific error to help diagnose private key issues
+    console.error('Check FIREBASE_PRIVATE_KEY format (must use \\n to represent newlines in Vercel/Env var)');
     return false;
   }
 }
@@ -75,6 +86,7 @@ const FirebaseService = {
   // Utility for writing the session state for the multi-step upload process
   async saveUploadState(userId, stateData) {
     try {
+      if (!db) throw new Error("Firestore DB not initialized.");
       const stateRef = db.collection('uploadStates').doc(userId.toString());
       await stateRef.set({
         ...stateData,
@@ -82,13 +94,15 @@ const FirebaseService = {
       }, { merge: true }); // Use merge: true for safe updates
       return true;
     } catch (error) {
-      console.error('Firebase saveUploadState error:', error);
+      // ⚠️ CRITICAL DEBUGGING POINT: Logging the exact Firestore error
+      console.error('❌ Firebase saveUploadState error:', error.message, error.stack);
       return false; // Return false on failure for clear handling
     }
   },
 
   async getUploadState(userId) {
     try {
+      if (!db) return null;
       const stateDoc = await db.collection('uploadStates').doc(userId.toString()).get();
       return stateDoc.exists ? stateDoc.data() : null;
     } catch (error) {
@@ -99,6 +113,7 @@ const FirebaseService = {
 
   async deleteUploadState(userId) {
     try {
+      if (!db) return true;
       await db.collection('uploadStates').doc(userId.toString()).delete();
       return true;
     } catch (error) {
@@ -107,10 +122,9 @@ const FirebaseService = {
     }
   },
   
-  // (Other Firebase services like saveNote, getStats, etc. remain the same)
-  // ...
   async saveUser(userData) {
     try {
+      if (!db) throw new Error("Firestore DB not initialized.");
       const userRef = db.collection('users').doc(userData.id.toString());
       await userRef.set({
         ...userData,
@@ -125,6 +139,7 @@ const FirebaseService = {
 
   async getNote(noteId) {
     try {
+      if (!db) return null;
       const noteDoc = await db.collection('notes').doc(noteId).get();
       return noteDoc.exists ? noteDoc.data() : null;
     } catch (error) {
@@ -135,6 +150,7 @@ const FirebaseService = {
   
   async saveNote(noteData) {
     try {
+      if (!db) throw new Error("Firestore DB not initialized.");
       const noteRef = db.collection('notes').doc(noteData.id);
       await noteRef.set({
         ...noteData,
@@ -150,6 +166,7 @@ const FirebaseService = {
 
   async getAdminNotes(adminId) {
     try {
+      if (!db) return [];
       const idToCheck = parseInt(adminId);
       const snapshot = await db.collection('notes')
         .where('uploadedBy', '==', idToCheck)
@@ -165,6 +182,7 @@ const FirebaseService = {
 
   async uploadHTMLToStorage(fileBuffer, noteId) {
     try {
+      if (!bucket) throw new Error("Firebase Storage bucket not initialized.");
       const fileName = `notes/${noteId}.html`;
       const file = bucket.file(fileName);
       
@@ -189,6 +207,7 @@ const FirebaseService = {
 
   async getStats() {
     try {
+      if (!db) return { totalNotes: 0, activeNotes: 0, totalUsers: 0, totalViews: 0 };
       const [notesSnapshot, usersSnapshot] = await Promise.all([
         db.collection('notes').get(),
         db.collection('users').get()
@@ -211,7 +230,6 @@ const FirebaseService = {
 // ========== BOT OPERATIONS (UI/FLOW) ========== //
 
 const showAdminDashboard = async (chatId) => {
-  // Simplified for brevity, assumes successful stats retrieval
   await bot.sendMessage(chatId, `🤖 *Admin Dashboard*`, { 
     parse_mode: 'Markdown',
     reply_markup: {
@@ -238,6 +256,10 @@ const showNotesList = async (chatId, userId) => {
 
 const showNoteManagement = async (chatId, noteId) => {
   const note = await FirebaseService.getNote(noteId);
+  if (!note) {
+    await bot.sendMessage(chatId, "❌ Note not found.");
+    return;
+  }
   const message = `📖 *${note.title}* Uploaded.`;
   await bot.sendMessage(chatId, message, {
     parse_mode: 'Markdown',
@@ -257,7 +279,7 @@ const startUploadFlow = async (chatId, userId) => {
   });
 
   if (!stateSaved) {
-     // Critical error feedback if the DB write failed
+     // This is the error message the user reported. It is triggered by a failed DB write.
      await bot.sendMessage(chatId, "❌ Critical Error: Failed to start upload session. Please check Firebase connection and permissions.");
      return;
   }
@@ -281,12 +303,10 @@ const handleFolderSelection = async (chatId, userId, folderId) => {
   // 1. Get User State
   const uploadState = await FirebaseService.getUploadState(userId);
   
-  // 2. 🎯 FIX: Explicitly check state validity
+  // 2. Check state validity
   if (!uploadState || uploadState.state !== 'awaiting_note_folder' || !folder) {
-    // This is the error message the user was seeing. It is correctly triggered
-    // if they click an old button or the session never started successfully.
     await bot.sendMessage(chatId, 
-      "⚠️ **Session Expired**\n\nPlease click '📤 Upload Note' to start again.", 
+      "⚠️ **Session Expired**\n\nPlease click '📤 Upload New Note' to start again.", 
       { parse_mode: 'Markdown' }
     );
     return;
@@ -309,10 +329,11 @@ const handleFolderSelection = async (chatId, userId, folderId) => {
 };
 
 const handleCategorySelection = async (chatId, userId, categoryId) => {
+  const category = categories.get(categoryId);
   const uploadState = await FirebaseService.getUploadState(userId);
   
-  // 1. FIX: Explicitly check state validity
-  if (!uploadState || uploadState.state !== 'awaiting_note_category') {
+  // 1. Check state validity
+  if (!uploadState || uploadState.state !== 'awaiting_note_category' || !category) {
     await bot.sendMessage(chatId, "⚠️ **Session Expired**\n\nPlease start again.");
     return;
   }
@@ -363,11 +384,13 @@ const handleMessage = async (msg) => {
     if (text === '/start') {
         await FirebaseService.saveUser({ id: userId, firstName: msg.from.first_name, isAdmin: ADMIN_IDS.includes(userId) });
         if (ADMIN_IDS.includes(userId)) await showAdminDashboard(chatId);
+        else await bot.sendMessage(chatId, 'Hello! I am a note-sharing bot.');
     } else if (text === '📤 Upload Note' && ADMIN_IDS.includes(userId)) {
       await startUploadFlow(chatId, userId);
     } else if (text === '📚 My Notes' && ADMIN_IDS.includes(userId)) {
       await showNotesList(chatId, userId);
     } else if (text === '📁 Folders' && ADMIN_IDS.includes(userId)) {
+      // NOTE: This text command handler was missing in the original code's logic
       await showFolderManagement(chatId);
     }
   } catch (error) {
@@ -393,27 +416,43 @@ const handleDocument = async (msg) => {
     const processingMsg = await bot.sendMessage(chatId, "⏳ Processing...");
     
     try {
+      // 1. Get file stream/link from Telegram
       const fileLink = await bot.getFileLink(document.file_id);
+      
+      // 2. Download the file
       const response = await fetch(fileLink);
+      if (!response.ok) throw new Error(`Failed to download file from Telegram: HTTP ${response.status}`);
       const buffer = Buffer.from(await response.arrayBuffer());
 
+      // 3. Upload to Firebase Storage
       const noteId = `note_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const publicUrl = await FirebaseService.uploadHTMLToStorage(buffer, noteId);
 
       if (publicUrl) {
-        const noteData = { id: noteId, ...uploadState.noteData, uploadedBy: userId, firebase_url: publicUrl, is_active: true };
+        // 4. Save metadata to Firestore and cleanup state
+        const noteData = { id: noteId, ...uploadState.noteData, uploadedBy: userId, firebase_url: publicUrl, is_active: true, views: 0 };
         await FirebaseService.saveNote(noteData);
         await FirebaseService.deleteUploadState(userId);
+        
         await bot.deleteMessage(chatId, processingMsg.message_id);
         await bot.sendMessage(chatId, "✅ Upload Complete!");
         await showNoteManagement(chatId, noteId);
+      } else {
+         // This catches the failure inside uploadHTMLToStorage
+         throw new Error("Failed to get public URL for file.");
       }
     } catch (e) {
-      console.error(e);
-      await bot.sendMessage(chatId, "❌ Upload Failed: " + e.message);
+      console.error('File Upload Pipeline Error:', e);
+      // Ensure the processing message is updated with the failure
+      await bot.editMessageText(`❌ Upload Failed: ${e.message.substring(0, 100)}`, { chat_id: chatId, message_id: processingMsg.message_id });
+      // Clean up the session state anyway to allow a retry
+      await FirebaseService.deleteUploadState(userId);
     }
   } else {
-    await bot.sendMessage(chatId, "📎 Please start the upload process first using '📤 Upload Note'.");
+    // Only send this message if not an admin or if the flow wasn't started
+    if (ADMIN_IDS.includes(userId)) {
+      await bot.sendMessage(chatId, "📎 Please start the upload process first using '📤 Upload New Note'.");
+    }
   }
 };
 
@@ -428,7 +467,6 @@ const showFolderManagement = async (chatId) => {
   const options = {
     reply_markup: {
       inline_keyboard: [
-        // FIXED: Placeholder handlers added to prevent silent failures
         [{ text: '➕ Add Folder (Coming Soon)', callback_data: 'add_folder' }],
         [{ text: '➕ Add Category (Coming Soon)', callback_data: 'add_category' }],
         [{ text: '⬅️ Back', callback_data: 'back_to_dashboard' }]
@@ -468,7 +506,10 @@ const handleCallbackQuery = async (callbackQuery) => {
     else if (data === 'back_to_dashboard') {
       await showAdminDashboard(chatId);
     }
-    // FIXED: Placeholder handlers
+    // Placeholder handlers
+    else if (data === 'admin_bulk_ops') {
+        await bot.sendMessage(chatId, "⚡ Bulk Operations feature is coming soon!");
+    }
     else if (data === 'add_folder' || data === 'add_category') {
       await bot.sendMessage(chatId, "⚠️ This feature for dynamic creation is under construction. Please use the existing folders.");
     }
@@ -490,7 +531,8 @@ const handleCallbackQuery = async (callbackQuery) => {
 module.exports = async (req, res) => {
   // Try to initialize services. If it fails, send a 500 error.
   if (!initializeServices()) {
-    return res.status(500).json({ error: 'Firebase/Bot initialization failed. Check environment variables.' });
+    // NOTE: Initialization failure means services are NOT available.
+    return res.status(500).json({ error: 'Firebase/Bot initialization failed. Check environment variables in your serverless host.' });
   }
 
   if (req.method === 'POST') {
@@ -510,5 +552,6 @@ module.exports = async (req, res) => {
   }
 
   // Handle GET requests (health check)
+  // Ensure the bot is properly set up for webhooks if this returns "Online"
   return res.status(200).json({ status: 'Online', initialized: isInitialized });
 };
