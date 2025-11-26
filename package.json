@@ -1,8 +1,9 @@
 {
-  "name": "ju-notes-bot-vercel",
+  "name": "firebase-upload-test",
   "version": "1.0.0",
   "dependencies": {
     "node-telegram-bot-api": "^0.64.0",
-    "firebase-admin": "^11.0.0"
+    "firebase-admin": "^11.0.0",
+    "node-fetch": "^2.6.7"
   }
 }
