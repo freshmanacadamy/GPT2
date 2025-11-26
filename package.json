@@ -1,9 +1,7 @@
 {
-  "name": "edge-blob-notes-bot",
+  "name": "telegram-notes-bot",
   "version": "1.0.0",
   "dependencies": {
-    "node-telegram-bot-api": "^0.64.0",
-    "@vercel/blob": "^0.18.0",
-    "@vercel/edge-config": "^1.1.0"
+    "node-telegram-bot-api": "^0.64.0"
   }
 }
