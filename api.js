@@ -1,158 +1,130 @@
 const TelegramBot = require('node-telegram-bot-api');
 const admin = require('firebase-admin');
-const fetch = require('node-fetch');
 
 // 🛡️ GLOBAL ERROR HANDLER
 process.on('unhandledRejection', (error) => {
   console.error('🔴 Unhandled Promise Rejection:', error);
 });
 
-// ========== CONFIGURATION ========== //
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_IDS = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',').map(Number) : [];
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
 const FIREBASE_PRIVATE_KEY = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
 const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL;
 
-// Debug environment variables (without exposing private key)
+// Validate environment variables
 console.log('🔧 Environment Check:');
-console.log('BOT_TOKEN:', BOT_TOKEN ? '✅ Set' : '❌ Missing');
-console.log('FIREBASE_PROJECT_ID:', FIREBASE_PROJECT_ID || '❌ Missing');
-console.log('FIREBASE_CLIENT_EMAIL:', FIREBASE_CLIENT_EMAIL || '❌ Missing');
-console.log('FIREBASE_PRIVATE_KEY:', FIREBASE_PRIVATE_KEY ? '✅ Set' : '❌ Missing');
+console.log('- BOT_TOKEN:', BOT_TOKEN ? '✅' : '❌');
+console.log('- FIREBASE_PROJECT_ID:', FIREBASE_PROJECT_ID || '❌');
+console.log('- FIREBASE_CLIENT_EMAIL:', FIREBASE_CLIENT_EMAIL || '❌');
+console.log('- FIREBASE_PRIVATE_KEY:', FIREBASE_PRIVATE_KEY ? '✅' : '❌');
 
-// Initialize Firebase
-let db, bucket, isFirebaseReady = false;
-
-try {
-  if (FIREBASE_PROJECT_ID && FIREBASE_PRIVATE_KEY && FIREBASE_CLIENT_EMAIL) {
-    admin.initializeApp({
-      credential: admin.credential.cert({
-        projectId: FIREBASE_PROJECT_ID,
-        privateKey: FIREBASE_PRIVATE_KEY,
-        clientEmail: FIREBASE_CLIENT_EMAIL
-      }),
-      storageBucket: `${FIREBASE_PROJECT_ID}.appspot.com`
-    });
-    
-    db = admin.firestore();
-    bucket = admin.storage().bucket();
-    isFirebaseReady = true;
-    console.log('✅ Firebase initialized successfully');
-    console.log('📦 Storage Bucket:', bucket.name);
-  } else {
-    console.log('❌ Firebase environment variables missing');
-  }
-} catch (error) {
-  console.error('❌ Firebase initialization failed:', error.message);
-  isFirebaseReady = false;
+if (!BOT_TOKEN || !FIREBASE_PROJECT_ID || !FIREBASE_PRIVATE_KEY || !FIREBASE_CLIENT_EMAIL) {
+  console.error('❌ Missing environment variables');
+  process.exit(1);
 }
 
-// Create bot instance
+// Initialize Firebase with NEW database
+let db, bucket;
+try {
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: FIREBASE_PROJECT_ID,
+      privateKey: FIREBASE_PRIVATE_KEY,
+      clientEmail: FIREBASE_CLIENT_EMAIL
+    }),
+    storageBucket: `${FIREBASE_PROJECT_ID}.appspot.com`
+  });
+  
+  db = admin.firestore();
+  bucket = admin.storage().bucket();
+  console.log('✅ New Firebase database initialized successfully');
+  
+} catch (error) {
+  console.error('❌ Firebase initialization failed:', error.message);
+  process.exit(1);
+}
+
 const bot = new TelegramBot(BOT_TOKEN, { polling: false });
 
-// ========== FIREBASE SERVICES ========== //
-const testFirebaseConnection = async () => {
-  if (!isFirebaseReady) return false;
-  
-  try {
-    console.log('🧪 Testing Firebase connection...');
-    
-    // Test Firestore
-    const testRef = db.collection('connection_tests').doc('test');
-    await testRef.set({ 
-      timestamp: new Date(), 
-      test: 'connection_ok',
-      message: 'Firebase is working!'
-    });
-    console.log('✅ Firestore connection OK');
-    
-    // Test Storage by creating a small test file
-    const testFile = bucket.file('connection_test.txt');
-    await testFile.save('Firebase connection test', {
-      metadata: {
-        contentType: 'text/plain'
-      }
-    });
-    console.log('✅ Storage connection OK');
-    
-    return true;
-  } catch (error) {
-    console.error('❌ Firebase connection test failed:', error.message);
-    return false;
-  }
-};
-
-const uploadToFirebaseStorage = async (fileBuffer, fileName) => {
-  if (!isFirebaseReady) {
-    console.error('❌ Firebase not ready for upload');
-    return null;
-  }
-
-  try {
-    console.log('🔥 Starting Firebase Storage upload...');
-    console.log('📁 File name:', fileName);
-    console.log('📦 Buffer size:', fileBuffer.length, 'bytes');
-
-    // Create file reference
-    const file = bucket.file(`uploads/${fileName}`);
-    
-    console.log('📤 Uploading file to storage...');
-    
-    // Upload the file with simple options
-    await file.save(fileBuffer, {
-      metadata: {
-        contentType: 'text/html',
-        cacheControl: 'public, max-age=3600'
-      }
-    });
-    
-    console.log('✅ File saved to storage');
-
-    // Make file publicly accessible
-    console.log('🔓 Making file public...');
-    await file.makePublic();
-    console.log('✅ File made public');
-
-    // Get public URL
-    const publicUrl = `https://storage.googleapis.com/${bucket.name}/uploads/${fileName}`;
-    console.log('🔗 Generated public URL:', publicUrl);
-    
-    // Verify the URL is accessible
+// ========== FIREBASE SERVICE ========== //
+const FirebaseService = {
+  async testConnection() {
     try {
-      const response = await fetch(publicUrl, { method: 'HEAD' });
-      console.log('🌐 URL accessibility check:', response.status);
-    } catch (urlError) {
-      console.log('⚠️ URL might not be immediately accessible:', urlError.message);
+      const testRef = db.collection('config').doc('bot_status');
+      await testRef.set({ 
+        status: 'active', 
+        lastTest: admin.firestore.FieldValue.serverTimestamp(),
+        message: 'Bot connected successfully to new database'
+      });
+      return true;
+    } catch (error) {
+      console.error('Firebase test failed:', error);
+      return false;
     }
-    
-    return publicUrl;
-  } catch (error) {
-    console.error('❌ Firebase Storage upload failed:', error);
-    console.error('Error details:', error.message);
-    console.error('Error code:', error.code);
-    return null;
-  }
-};
+  },
 
-const saveToFirestore = async (noteData) => {
-  if (!isFirebaseReady) return false;
+  async saveNote(noteData) {
+    try {
+      const noteRef = db.collection('notes').doc(noteData.id);
+      await noteRef.set({
+        ...noteData,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      return true;
+    } catch (error) {
+      console.error('Save note error:', error);
+      return false;
+    }
+  },
 
-  try {
-    console.log('💾 Saving to Firestore...');
-    
-    const noteRef = db.collection('notes').doc(noteData.id);
-    await noteRef.set({
-      ...noteData,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-    
-    console.log('✅ Saved to Firestore:', noteData.id);
-    return true;
-  } catch (error) {
-    console.error('❌ Firestore save failed:', error);
-    return false;
+  async getAdminNotes(adminId) {
+    try {
+      const snapshot = await db.collection('notes')
+        .where('uploadedBy', '==', parseInt(adminId))
+        .orderBy('createdAt', 'desc')
+        .limit(20)
+        .get();
+      return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    } catch (error) {
+      console.error('Get notes error:', error);
+      return [];
+    }
+  },
+
+  async saveUploadState(userId, stateData) {
+    try {
+      const stateRef = db.collection('upload_states').doc(userId.toString());
+      await stateRef.set({
+        ...stateData,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+      return true;
+    } catch (error) {
+      console.error('Save state error:', error);
+      return false;
+    }
+  },
+
+  async getUploadState(userId) {
+    try {
+      const stateDoc = await db.collection('upload_states').doc(userId.toString()).get();
+      return stateDoc.exists ? stateDoc.data() : null;
+    } catch (error) {
+      console.error('Get state error:', error);
+      return null;
+    }
+  },
+
+  async deleteUploadState(userId) {
+    try {
+      await db.collection('upload_states').doc(userId.toString()).delete();
+      return true;
+    } catch (error) {
+      console.error('Delete state error:', error);
+      return false;
+    }
   }
 };
 
@@ -161,72 +133,43 @@ const handleStart = async (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
   
-  const isAdmin = ADMIN_IDS.includes(userId);
-  
-  if (isAdmin) {
+  if (ADMIN_IDS.includes(userId)) {
     // Test Firebase connection first
-    const firebaseStatus = isFirebaseReady ? '✅ Connected' : '❌ Disconnected';
+    const firebaseWorking = await FirebaseService.testConnection();
+    
+    const status = firebaseWorking ? '✅ Connected' : '❌ Failed';
     
     await bot.sendMessage(chatId,
-      `FIREBASE UPLOAD TEST BOT\n\n` +
-      `Firebase Status: ${firebaseStatus}\n\n` +
-      `Click below to test upload:`,
+      `🤖 *New Database Test*\n\n` +
+      `🔥 Firebase: ${status}\n` +
+      `📊 New Project: ${FIREBASE_PROJECT_ID}\n\n` +
+      `Test the upload flow:`,
       {
+        parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
-            [{ text: '📤 TEST FIREBASE UPLOAD', callback_data: 'test_upload' }],
-            [{ text: '🔄 TEST FIREBASE CONNECTION', callback_data: 'test_connection' }]
+            [{ text: '📤 Upload HTML File', callback_data: 'upload_html' }],
+            [{ text: '🧪 Test Again', callback_data: 'test_firebase' }]
           ]
         }
       }
     );
   } else {
-    await bot.sendMessage(chatId, 'Admin access required.');
+    await bot.sendMessage(chatId, '❌ Admin access required.');
   }
 };
 
-const startTestUpload = async (chatId) => {
-  if (!isFirebaseReady) {
-    await bot.sendMessage(chatId,
-      `❌ FIREBASE NOT READY\n\n` +
-      `Firebase is not properly configured.\n` +
-      `Check your environment variables.`
-    );
-    return;
-  }
+const startUploadFlow = async (chatId, userId) => {
+  await FirebaseService.saveUploadState(userId, {
+    state: 'awaiting_file',
+    noteData: {}
+  });
 
   await bot.sendMessage(chatId,
-    `FIREBASE UPLOAD TEST\n\n` +
-    `Send me an HTML file to test:\n` +
-    `1. Download from Telegram\n` +
-    `2. Upload to Firebase Storage\n` +
-    `3. Save info to Firestore\n` +
-    `4. Get public URL\n\n` +
-    `I'll show you each step.`
+    `📤 *Upload to NEW Database*\n\n` +
+    `Send me an HTML file to test the new Firebase setup.`,
+    { parse_mode: 'Markdown' }
   );
-};
-
-const testConnection = async (chatId) => {
-  await bot.sendMessage(chatId, '🧪 Testing Firebase connection...');
-  
-  const connectionOk = await testFirebaseConnection();
-  
-  if (connectionOk) {
-    await bot.sendMessage(chatId,
-      `✅ FIREBASE CONNECTION SUCCESS!\n\n` +
-      `• Firestore: ✅ Working\n` +
-      `• Storage: ✅ Working\n\n` +
-      `Ready for file uploads!`
-    );
-  } else {
-    await bot.sendMessage(chatId,
-      `❌ FIREBASE CONNECTION FAILED\n\n` +
-      `Check:\n` +
-      `1. Environment variables\n` +
-      `2. Firebase service account permissions\n` +
-      `3. Project ID and credentials`
-    );
-  }
 };
 
 const handleDocument = async (msg) => {
@@ -234,120 +177,75 @@ const handleDocument = async (msg) => {
   const userId = msg.from.id;
   const document = msg.document;
 
-  console.log('📎 Document received:', {
-    file_name: document.file_name,
-    file_size: document.file_size,
-    mime_type: document.mime_type
-  });
+  if (!ADMIN_IDS.includes(userId)) return;
 
-  // Check Firebase connection
-  if (!isFirebaseReady) {
-    await bot.sendMessage(chatId,
-      `❌ FIREBASE NOT CONFIGURED\n\n` +
-      `Cannot upload files. Check Firebase setup.`
-    );
-    return;
-  }
-
-  // Check if it's HTML
-  const isHTML = document.file_name?.toLowerCase().endsWith('.html');
+  const uploadState = await FirebaseService.getUploadState(userId);
   
-  if (isHTML) {
-    try {
-      // Step 1: Download from Telegram
-      await bot.sendMessage(chatId, '🔄 Step 1: Downloading from Telegram...');
-      
-      const fileLink = await bot.getFileLink(document.file_id);
-      console.log('📥 Telegram file link:', fileLink);
-      
-      const response = await fetch(fileLink);
-      if (!response.ok) {
-        throw new Error(`Telegram download failed: ${response.status}`);
-      }
-      
-      const fileBuffer = Buffer.from(await response.arrayBuffer());
-      console.log('✅ Downloaded from Telegram:', fileBuffer.length, 'bytes');
+  if (uploadState && uploadState.state === 'awaiting_file' && document) {
+    const isHTML = document.file_name?.toLowerCase().endsWith('.html');
+    
+    if (isHTML) {
+      try {
+        const noteId = `note_${Date.now()}`;
+        const noteData = {
+          id: noteId,
+          title: document.file_name,
+          description: 'Uploaded to new database',
+          file_name: document.file_name,
+          file_size: document.file_size,
+          uploadedBy: userId,
+          views: 0,
+          is_active: true,
+          firebase_url: `https://storage.googleapis.com/${bucket.name}/notes/${noteId}.html`
+        };
 
-      // Step 2: Upload to Firebase Storage
-      await bot.sendMessage(chatId, '🔄 Step 2: Uploading to Firebase Storage...');
-      
-      const fileName = `test_${Date.now()}_${Math.random().toString(36).substr(2, 6)}.html`;
-      const publicUrl = await uploadToFirebaseStorage(fileBuffer, fileName);
-
-      if (!publicUrl) {
-        throw new Error('Firebase Storage upload failed - check server logs');
-      }
-
-      // Step 3: Save to Firestore
-      await bot.sendMessage(chatId, '🔄 Step 3: Saving to database...');
-      
-      const noteData = {
-        id: `note_${Date.now()}`,
-        title: document.file_name,
-        file_name: document.file_name,
-        file_size: document.file_size,
-        uploaded_by: userId,
-        firebase_url: publicUrl,
-        is_active: true,
-        views: 0,
-        uploaded_at: new Date()
-      };
-
-      const saved = await saveToFirestore(noteData);
-
-      if (saved) {
-        // Success!
-        await bot.sendMessage(chatId,
-          `✅ FIREBASE UPLOAD SUCCESS!\n\n` +
-          `📁 File: ${document.file_name}\n` +
-          `📦 Size: ${(document.file_size / 1024).toFixed(2)} KB\n` +
-          `🔗 Public URL: ${publicUrl}\n\n` +
-          `📊 Saved to: Firestore notes collection\n` +
-          `🗂️ Storage path: uploads/${fileName}\n\n` +
-          `🎉 File is now live on Firebase!`
-        );
+        const saved = await FirebaseService.saveNote(noteData);
         
-        console.log('🎉 Complete upload success for file:', document.file_name);
-      } else {
-        throw new Error('Firestore save failed');
-      }
+        if (saved) {
+          await FirebaseService.deleteUploadState(userId);
+          
+          await bot.sendMessage(chatId,
+            `✅ *Success! Saved to NEW Database*\n\n` +
+            `📁 File: ${document.file_name}\n` +
+            `🔥 Database: ${FIREBASE_PROJECT_ID}\n` +
+            `🆔 Note ID: ${noteId}\n\n` +
+            `🎉 Your new Firebase database is working!`,
+            { parse_mode: 'Markdown' }
+          );
+        } else {
+          throw new Error('Failed to save to database');
+        }
 
-    } catch (error) {
-      console.error('❌ Upload pipeline error:', error);
-      await bot.sendMessage(chatId,
-        `❌ UPLOAD FAILED\n\n` +
-        `Error: ${error.message}\n\n` +
-        `Check Vercel logs for detailed error information.`
-      );
+      } catch (error) {
+        await bot.sendMessage(chatId,
+          `❌ *Upload Failed*\n\n` +
+          `Error: ${error.message}`,
+          { parse_mode: 'Markdown' }
+        );
+      }
+    } else {
+      await bot.sendMessage(chatId, '❌ Please send an HTML file.');
     }
-  } else {
-    await bot.sendMessage(chatId,
-      `❌ WRONG FILE TYPE\n\n` +
-      `Please send an HTML file (.html extension)\n` +
-      `You sent: ${document.file_name}`
-    );
   }
 };
 
 const handleCallbackQuery = async (callbackQuery) => {
   const message = callbackQuery.message;
+  const userId = callbackQuery.from.id;
   const data = callbackQuery.data;
   const chatId = message.chat.id;
 
   try {
     await bot.answerCallbackQuery(callbackQuery.id);
 
-    if (data === 'test_upload') {
-      await startTestUpload(chatId);
-    } else if (data === 'test_connection') {
-      await testConnection(chatId);
+    if (data === 'upload_html') {
+      await startUploadFlow(chatId, userId);
+    } else if (data === 'test_firebase') {
+      await handleStart({ chat: { id: chatId }, from: { id: userId } });
     }
 
   } catch (error) {
     console.error('Callback error:', error);
-    await bot.answerCallbackQuery(callbackQuery.id, { 
-      text: 'Error processing button' 
-    });
   }
 };
 
@@ -355,12 +253,8 @@ const handleMessage = async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
 
-  if (!text) return;
-
   if (text === '/start') {
     await handleStart(msg);
-  } else if (text === '/test') {
-    await testConnection(chatId);
   }
 };
 
@@ -368,19 +262,15 @@ const handleMessage = async (msg) => {
 module.exports = async (req, res) => {
   console.log(`🌐 ${req.method} request to ${req.url}`);
 
-  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
   if (req.method === 'GET') {
     return res.status(200).json({
-      status: 'Firebase Upload Test Bot Online',
-      firebase_ready: isFirebaseReady,
-      project_id: FIREBASE_PROJECT_ID,
+      status: '🟢 New Database Bot Online',
+      project: FIREBASE_PROJECT_ID,
       timestamp: new Date().toISOString()
     });
   }
@@ -388,21 +278,17 @@ module.exports = async (req, res) => {
   if (req.method === 'POST') {
     try {
       const update = req.body;
-      console.log('📦 Update received:', update.update_id);
-
+      
       if (update.message) {
-        if (update.message.text) {
-          await handleMessage(update.message);
-        } else if (update.message.document) {
-          await handleDocument(update.message);
-        }
+        if (update.message.text) await handleMessage(update.message);
+        else if (update.message.document) await handleDocument(update.message);
       } else if (update.callback_query) {
         await handleCallbackQuery(update.callback_query);
       }
 
       return res.status(200).json({ ok: true });
     } catch (error) {
-      console.error('❌ Webhook error:', error);
+      console.error('Webhook error:', error);
       return res.status(500).json({ error: error.message });
     }
   }
@@ -410,9 +296,5 @@ module.exports = async (req, res) => {
   return res.status(405).json({ error: 'Method not allowed' });
 };
 
-console.log('✅ Firebase Upload Test Bot Started!');
-console.log('🔧 Firebase Status:', isFirebaseReady ? 'READY' : 'NOT READY');
-console.log('🎯 Commands:');
-console.log('   /start - Show test menu');
-console.log('   /test - Test Firebase connection');
-console.log('   Click "TEST FIREBASE UPLOAD" → Send HTML file');
+console.log('✅ New Database Bot Started!');
+console.log('🔥 Project:', FIREBASE_PROJECT_ID);
