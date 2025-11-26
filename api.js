@@ -4,14 +4,16 @@ const admin = require('firebase-admin');
 // 🛡️ GLOBAL ERROR HANDLER
 process.on('unhandledRejection', (error) => {
   console.error('🔴 Unhandled Promise Rejection:', error);
+  console.error('Error stack:', error.stack);
 });
 process.on('uncaughtException', (error) => {
   console.error('🔴 Uncaught Exception:', error);
+  console.error('Error stack:', error.stack);
 });
 
 // Get environment variables
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const ADMIN_IDS = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',').map(Number) : [];
+const ADMIN_IDS = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id)) : [];
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
 const FIREBASE_PRIVATE_KEY = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n');
 const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL;
@@ -19,8 +21,15 @@ const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL;
 // Validate required environment variables
 if (!BOT_TOKEN || !FIREBASE_PROJECT_ID || !FIREBASE_PRIVATE_KEY || !FIREBASE_CLIENT_EMAIL) {
   console.error('❌ Missing required environment variables');
+  console.error('BOT_TOKEN exists:', !!BOT_TOKEN);
+  console.error('FIREBASE_PROJECT_ID exists:', !!FIREBASE_PROJECT_ID);
+  console.error('FIREBASE_PRIVATE_KEY exists:', !!FIREBASE_PRIVATE_KEY);
+  console.error('FIREBASE_CLIENT_EMAIL exists:', !!FIREBASE_CLIENT_EMAIL);
   process.exit(1);
 }
+
+console.log('✅ Environment variables validated');
+console.log('Admin IDs:', ADMIN_IDS);
 
 // Initialize Firebase Admin
 try {
@@ -371,20 +380,29 @@ const handleStart = async (msg) => {
   const userId = msg.from.id;
   
   try {
+    console.log('Starting bot for user:', userId); // DEBUG
+    console.log('Admin IDs:', ADMIN_IDS); // DEBUG
+    console.log('Is admin:', ADMIN_IDS.includes(userId)); // DEBUG
+    
     // Register/update user in Firestore
     const userRef = db.collection('users').doc(userId.toString());
     await userRef.set({
       telegramId: userId,
       username: msg.from.username || '',
       firstName: msg.from.first_name || '',
+      lastName: msg.from.last_name || '',
       isAdmin: ADMIN_IDS.includes(userId),
       lastActive: admin.firestore.FieldValue.serverTimestamp(),
       startedBot: true
     }, { merge: true });
     
+    console.log('User registered successfully'); // DEBUG
+    
     if (ADMIN_IDS.includes(userId)) {
+      console.log('Showing admin dashboard'); // DEBUG
       await showAdminDashboard(chatId);
     } else {
+      console.log('Showing regular menu'); // DEBUG
       await bot.sendMessage(chatId,
         `🎓 *Welcome to JU Study Materials!*\n\n` +
         `Access approved study notes and resources.\n\n` +
@@ -394,8 +412,9 @@ const handleStart = async (msg) => {
       await showMainMenu(chatId, userId);
     }
   } catch (error) {
-    console.error('Error in start command:', error);
-    await bot.sendMessage(chatId, '❌ Error initializing. Please try again.');
+    console.error('Error in start command:', error); // This will show the real error
+    console.error('Error stack:', error.stack);
+    await bot.sendMessage(chatId, `❌ Error initializing. Details: ${error.message}`);
   }
 };
 
@@ -462,6 +481,8 @@ const handleCallbackQuery = async (callbackQuery) => {
   const chatId = message.chat.id;
   
   try {
+    console.log('Callback received:', data); // DEBUG
+    
     // Admin actions
     if (data === 'admin_view_notes') {
       await showNotesList(chatId, userId);
@@ -502,11 +523,26 @@ const handleCallbackQuery = async (callbackQuery) => {
       await bot.sendMessage(chatId, '❌ Upload cancelled.');
       await showAdminDashboard(chatId);
     }
+    // ========== MISSING HANDLERS ADDED ==========
+    else if (data === 'add_folder') {
+      await bot.sendMessage(chatId, '❌ Add folder functionality not implemented yet.');
+    } else if (data === 'add_category') {
+      await bot.sendMessage(chatId, '❌ Add category functionality not implemented yet.');
+    } else if (data === 'bulk_regen_all') {
+      await bot.sendMessage(chatId, '🔄 Regenerating all links... (functionality not implemented)');
+    } else if (data === 'bulk_revoke_all') {
+      await bot.sendMessage(chatId, '🚫 Revoking all notes... (functionality not implemented)');
+    } else if (data.startsWith('category_')) {
+      const categoryId = data.replace('category_', '');
+      await handleCategorySelection(chatId, userId, categoryId);
+    }
+    // ========== END MISSING HANDLERS ==========
     
     // Answer callback query
     await bot.answerCallbackQuery(callbackQuery.id);
   } catch (error) {
     console.error('Callback error:', error);
+    console.error('Error stack:', error.stack);
     await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Error processing request' });
   }
 };
@@ -854,6 +890,21 @@ const handleFolderSelection = async (chatId, userId, folderId) => {
   }
 };
 
+const handleCategorySelection = async (chatId, userId, categoryId) => {
+  const userState = userStates.get(userId);
+  if (userState && userState.state === 'awaiting_note_category') {
+    userState.noteData.category = categoryId;
+    userState.state = 'awaiting_note_title';
+    userStates.set(userId, userState);
+    
+    await bot.sendMessage(chatId,
+      `📝 *Step 3/4 - Note Title*\n\n` +
+      `Enter a title for your note:`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+};
+
 // ========== VERCEL HANDLER ========== //
 module.exports = async (req, res) => {
   // Set CORS headers
@@ -892,7 +943,8 @@ module.exports = async (req, res) => {
       return res.status(200).json({ ok: true });
     } catch (error) {
       console.error('Error processing update:', error);
-      return res.status(500).json({ error: 'Internal server error' });
+      console.error('Error stack:', error.stack);
+      return res.status(500).json({ error: 'Internal server error', details: error.message });
     }
   }
   
