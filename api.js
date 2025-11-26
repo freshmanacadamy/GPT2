@@ -1,5 +1,6 @@
 const TelegramBot = require('node-telegram-bot-api');
 const admin = require('firebase-admin');
+const axios = require('axios'); // Add axios for downloading files
 
 // 🛡️ GLOBAL ERROR HANDLER
 process.on('unhandledRejection', (error) => {
@@ -44,11 +45,9 @@ try {
 
 const db = admin.firestore();
 const bucket = admin.storage().bucket();
-
-// Create bot instance
 const bot = new TelegramBot(BOT_TOKEN, { polling: false });
 
-// Folder structure
+// Folder structure - Stored in memory, needs to be managed via Firestore for persistence if dynamic
 const folders = new Map([
   ['natural', {
     id: 'natural',
@@ -74,6 +73,7 @@ const categories = new Map([
 
 // ========== FIREBASE SERVICES ========== //
 const FirebaseService = {
+  // --- User Operations ---
   async saveUser(userData) {
     try {
       const userRef = db.collection('users').doc(userData.id.toString());
@@ -98,6 +98,7 @@ const FirebaseService = {
     }
   },
 
+  // --- Note Operations ---
   async saveNote(noteData) {
     try {
       const noteRef = db.collection('notes').doc(noteData.id);
@@ -160,6 +161,7 @@ const FirebaseService = {
     }
   },
 
+  // --- Upload State Operations ---
   async saveUploadState(userId, stateData) {
     try {
       const stateRef = db.collection('uploadStates').doc(userId.toString());
@@ -194,6 +196,7 @@ const FirebaseService = {
     }
   },
 
+  // --- Storage Operations ---
   async uploadHTMLToStorage(htmlContent, noteId) {
     try {
       const fileName = `notes/${noteId}.html`;
@@ -222,7 +225,8 @@ const FirebaseService = {
       ]);
       
       const totalNotes = notesSnapshot.size;
-      const activeNotes = notesSnapshot.docs.filter(doc => doc.data().is_active !== false).length;
+      // Count only notes where is_active is explicitly true
+      const activeNotes = notesSnapshot.docs.filter(doc => doc.data().is_active === true).length;
       const totalUsers = usersSnapshot.size;
       const totalViews = notesSnapshot.docs.reduce((sum, doc) => sum + (doc.data().views || 0), 0);
       
@@ -232,6 +236,25 @@ const FirebaseService = {
       return { totalNotes: 0, activeNotes: 0, totalUsers: 0, totalViews: 0 };
     }
   }
+};
+
+// ========== HELPER FUNCTIONS ========== //
+const createShareMessage = (note) => {
+  const message =
+    `🌟 **New Study Material Available!**\n\n` +
+    `${note.description}\n\n` +
+    `All Rights Reserved!\n` +
+    `©Freshman Academy 📚`;
+
+  const options = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🔓 Open Tutorial Now', callback_data: `open_${note.id}` }]
+      ]
+    }
+  };
+
+  return { message, options };
 };
 
 // ========== BOT OPERATIONS ========== //
@@ -372,7 +395,7 @@ const showNoteManagement = async (chatId, noteId) => {
       `• Views: ${note.views || 0} students\n` +
       `• Status: ${note.is_active === false ? '🚫 Inactive' : '✅ Active'}\n` +
       `• Location: ${folder?.name || 'Unknown'} → ${category?.name || 'Unknown'}\n` +
-      `• Uploaded: ${note.createdAt?.toDate?.().toLocaleDateString() || 'Unknown'}\n\n` +
+      `• Uploaded: ${note.createdAt?.toDate?.()?.toLocaleDateString() || 'Unknown'}\n\n` +
       `🛠️ *Management:*`;
 
     const options = {
@@ -384,7 +407,7 @@ const showNoteManagement = async (chatId, noteId) => {
           ],
           [
             { text: '📤 Share Note', callback_data: `share_${noteId}` },
-            { text: '✏️ Edit Info', callback_data: `edit_${noteId}` }
+            { text: '✏️ Edit Info', callback_data: `edit_${noteId}` } // Placeholder for future edit feature
           ],
           [
             { text: '🗑️ Delete Note', callback_data: `delete_${noteId}` },
@@ -429,51 +452,6 @@ const startUploadFlow = async (chatId, userId) => {
   } catch (error) {
     console.error('Error starting upload flow:', error);
     await bot.sendMessage(chatId, '❌ Error starting upload process.');
-  }
-};
-
-const createShareMessage = (note) => {
-  const message =
-    `🌟 **New Study Material Available!**\n\n` +
-    `${note.description}\n\n` +
-    `All Rights Reserved!\n` +
-    `©Freshman Academy 📚`;
-
-  const options = {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: '🔓 Open Tutorial Now', callback_data: `open_${note.id}` }]
-      ]
-    }
-  };
-
-  return { message, options };
-};
-
-const shareNoteToGroups = async (chatId, noteId) => {
-  try {
-    const note = await FirebaseService.getNote(noteId);
-
-    if (!note) {
-      await bot.sendMessage(chatId, '❌ Note not found.');
-      return;
-    }
-
-    const { message, options } = createShareMessage(note);
-
-    await bot.sendMessage(chatId,
-      `📤 *Share This Message*\n\n` +
-      `Copy and paste this to your groups:\n\n` +
-      `---\n` +
-      `${message}\n` +
-      `---`,
-      { parse_mode: 'Markdown' }
-    );
-
-    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown', ...options });
-  } catch (error) {
-    console.error('Error sharing note:', error);
-    await bot.sendMessage(chatId, '❌ Error sharing note.');
   }
 };
 
@@ -643,11 +621,18 @@ const handleDocument = async (msg) => {
 
       await bot.sendMessage(chatId, `⏳ Processing your HTML file...`);
 
+      // Get file path from Telegram API
+      const file = await bot.getFile(document.file_id);
+      const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+
+      // Download the file content
+      const response = await axios.get(fileUrl, { responseType: 'text' });
+      const htmlContent = response.data;
+
       // Generate unique note ID
       const noteId = `note_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       
-      // For now, create note without actual file processing
-      // In production, you would download and upload to Firebase Storage
+      // Prepare note data
       const noteData = {
         id: noteId,
         title: uploadState.noteData.title,
@@ -657,9 +642,13 @@ const handleDocument = async (msg) => {
         uploadedBy: userId,
         views: 0,
         is_active: true,
-        firebase_url: `https://storage.googleapis.com/${bucket.name}/notes/${noteId}.html`,
-        createdAt: new Date()
+        // Upload to Firebase Storage and get the URL
+        firebase_url: await FirebaseService.uploadHTMLToStorage(htmlContent, noteId)
       };
+
+      if (!noteData.firebase_url) {
+         throw new Error('Failed to upload file to Firebase Storage');
+      }
 
       // Save note to Firestore
       const noteSaved = await FirebaseService.saveNote(noteData);
@@ -705,11 +694,9 @@ const handleCallbackQuery = async (callbackQuery) => {
   const chatId = message.chat.id;
 
   console.log(`🔄 Callback from ${userId}: ${data}`);
-  console.log(`📋 Available folders:`, Array.from(folders.keys())); // Add this line
 
   try {
     await bot.answerCallbackQuery(callbackQuery.id);
-    // ... rest of your code
 
     if (data.startsWith('test_')) {
       const testNum = data.replace('test_', '');
@@ -721,15 +708,9 @@ const handleCallbackQuery = async (callbackQuery) => {
     else if (data === 'admin_upload_note') {
       await startUploadFlow(chatId, userId);
     }
-     else if (data === 'add_folder') {
-  await handleAddFolder(chatId, userId);
+    else if (data === 'admin_manage_folders') { // Added handler for this callback
+      await showFolderManagement(chatId);
     }
-else if (data === 'add_category') {
-  await handleAddCategory(chatId, userId);
-     }
-      
-
-      
     else if (data === 'admin_bulk_ops') {
       await showBulkOperations(chatId);
     }
@@ -741,6 +722,12 @@ else if (data === 'add_category') {
     }
     else if (data === 'back_to_dashboard') {
       await showAdminDashboard(chatId);
+    }
+    else if (data === 'add_folder') {
+      await handleAddFolder(chatId, userId);
+    }
+    else if (data === 'add_category') {
+      await handleAddCategory(chatId, userId);
     }
     else if (data.startsWith('folder_')) {
       const folderId = data.replace('folder_', '');
@@ -807,6 +794,8 @@ const testButtons = async (chatId) => {
   });
 };
 
+// --- Missing Functions Added ---
+
 const showFolderManagement = async (chatId) => {
   let message = `📁 *Folder Management*\n\n`;
   
@@ -846,9 +835,9 @@ const showBulkOperations = async (chatId) => {
     const options = {
       reply_markup: {
         inline_keyboard: [
-          [{ text: '🔄 Regenerate ALL Links', callback_data: 'bulk_regen_all' }],
-          [{ text: '🚫 Revoke ALL Access', callback_data: 'bulk_revoke_all' }],
-          [{ text: '📤 Share ALL Notes', callback_data: 'bulk_share_all' }],
+          [{ text: '🔄 Regenerate ALL Links', callback_data: 'bulk_regen_all' }], // Placeholder
+          [{ text: '🚫 Revoke ALL Access', callback_data: 'bulk_revoke_all' }], // Placeholder
+          [{ text: '📤 Share ALL Notes', callback_data: 'bulk_share_all' }], // Placeholder
           [{ text: '⬅️ Back to Dashboard', callback_data: 'back_to_dashboard' }]
         ]
       }
@@ -940,10 +929,22 @@ const handleCategorySelection = async (chatId, userId, categoryId) => {
 
 const regenerateNoteLink = async (chatId, noteId) => {
   try {
+    // In a real scenario, you might need to copy the file under a new name or just update the URL in metadata.
+    // For this example, we'll just generate a new ID and update the URL field.
     const newNoteId = `note_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
+    // Attempt to copy the old file to the new name (optional, depends on strategy)
+    // const oldFileName = `notes/${noteId}.html`;
+    // const newFileName = `notes/${newNoteId}.html`;
+    // const oldFile = bucket.file(oldFileName);
+    // const newFile = bucket.file(newFileName);
+    // await oldFile.copy(newFile);
+    // await oldFile.delete(); // Optionally delete old file after copy
+    
+    const newUrl = `https://storage.googleapis.com/${bucket.name}/notes/${newNoteId}.html`;
+
     await FirebaseService.updateNote(noteId, {
-      firebase_url: `https://storage.googleapis.com/${bucket.name}/notes/${newNoteId}.html`
+      firebase_url: newUrl
     });
 
     await bot.sendMessage(chatId,
@@ -979,32 +980,26 @@ const revokeNoteAccess = async (chatId, noteId) => {
 };
 
 const handleAddFolder = async (chatId, userId) => {
+  // This is a placeholder. In a full implementation, you'd add the folder to Firestore and update the Map.
+  // You would also need to prompt for a name and validate uniqueness.
   await bot.sendMessage(chatId,
     `📁 *Add New Folder*\n\n` +
-    `This feature is coming soon!\n\n` +
-    `For now, you can use the existing folders:\n` +
-    `• 📁 Natural Sciences\n` +
-    `• 📁 Social Sciences`,
+    `This feature requires backend updates to store folders in Firestore and manage the 'folders' Map dynamically.\n` +
+    `Current folders are hardcoded in the application code.`,
     { parse_mode: 'Markdown' }
   );
 };
 
 const handleAddCategory = async (chatId, userId) => {
+  // This is a placeholder. In a full implementation, you'd add the category to Firestore and update the Map.
+  // You would also need to prompt for a name, select a parent folder, and validate uniqueness.
   await bot.sendMessage(chatId,
     `🎯 *Add New Category*\n\n` +
-    `This feature is coming soon!\n\n` +
-    `For now, you can use existing categories:\n` +
-    `• 🎯 Pre-Engineering\n` +
-    `• 🎯 Freshman Program\n` +
-    `• 🎯 Medical Sciences\n` +
-    `• 🎯 Pure Sciences\n` +
-    `• 📚 Business Studies\n` +
-    `• 📚 Law & Politics\n` +
-    `• 📚 Arts & Humanities`,
+    `This feature requires backend updates to store categories in Firestore and manage the 'categories' Map dynamically.\n` +
+    `Current categories are hardcoded in the application code.`,
     { parse_mode: 'Markdown' }
   );
 };
-
 
 const openNote = async (chatId, noteId, userId) => {
   try {
@@ -1035,7 +1030,7 @@ const openNote = async (chatId, noteId, userId) => {
     }
 
     await FirebaseService.updateNote(noteId, {
-      views: (note.views || 0) + 1
+      views: admin.firestore.FieldValue.increment(1) // Use increment for atomic update
     });
 
     const options = {
@@ -1059,11 +1054,16 @@ const openNote = async (chatId, noteId, userId) => {
 
 const deleteNote = async (chatId, noteId, userId) => {
   try {
+    // Optional: Delete the HTML file from Firebase Storage
+    // const fileName = `notes/${noteId}.html`;
+    // const file = bucket.file(fileName);
+    // await file.delete().catch(err => console.error('Error deleting file from storage:', err)); // Ignore errors if file doesn't exist
+
     await FirebaseService.deleteNote(noteId);
 
     await bot.sendMessage(chatId,
       `🗑️ *Note Deleted!*\n\n` +
-      `The note has been permanently removed.`,
+      `The note has been permanently removed from the database.`,
       { parse_mode: 'Markdown' }
     );
 
