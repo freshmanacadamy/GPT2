@@ -1,3 +1,4 @@
+// api.js
 const TelegramBot = require('node-telegram-bot-api');
 const admin = require('firebase-admin');
 
@@ -408,45 +409,59 @@ const handleMessage = async (msg) => {
   if (!text) return;
   
   try {
-    if (text.startsWith('/')) {
-      switch (text) {
-        case '/start':
-          await handleStart(msg);
-          break;
-        case '/help':
-        case 'ℹ️ Help':
-          await handleHelp(msg);
-          break;
-        case '/admin':
-          if (ADMIN_IDS.includes(userId)) {
-            await showAdminDashboard(chatId);
-          }
-          break;
-        case '📚 My Notes':
-          if (ADMIN_IDS.includes(userId)) {
-            await showNotesList(chatId, userId);
-          }
-          break;
-        case '📤 Upload Note':
-          if (ADMIN_IDS.includes(userId)) {
-            await startUploadFlow(chatId, userId);
-          }
-          break;
-        case '📁 Manage Folders':
-          if (ADMIN_IDS.includes(userId)) {
-            await showFolderManagement(chatId);
-          }
-          break;
-        case '📊 Statistics':
-          if (ADMIN_IDS.includes(userId)) {
-            await showStatistics(chatId);
-          }
-          break;
-        default:
-          await showMainMenu(chatId, userId);
-      }
-    } else {
-      await handleRegularMessage(msg);
+    // Handle both slash commands and button texts
+    switch (text) {
+      case '/start':
+        await handleStart(msg);
+        break;
+
+      case '/help':
+      case 'ℹ️ Help':
+        await handleHelp(msg);
+        break;
+
+      case '/admin':
+        if (ADMIN_IDS.includes(userId)) {
+          await showAdminDashboard(chatId);
+        }
+        break;
+
+      case '📚 My Notes':
+        if (ADMIN_IDS.includes(userId)) {
+          await showNotesList(chatId, userId);
+        }
+        break;
+
+      case '📤 Upload Note':
+        if (ADMIN_IDS.includes(userId)) {
+          await startUploadFlow(chatId, userId);
+        }
+        break;
+
+      case '📁 Manage Folders':
+        if (ADMIN_IDS.includes(userId)) {
+          await showFolderManagement(chatId);
+        }
+        break;
+
+      case '📊 Statistics':
+        if (ADMIN_IDS.includes(userId)) {
+          await showStatistics(chatId);
+        }
+        break;
+
+      // Student buttons (basic placeholders so they respond)
+      case '🔓 Access Notes':
+        await bot.sendMessage(chatId, '🔓 Access Notes is not fully implemented yet, but the bot is working.');
+        break;
+
+      case '📞 Contact Admin':
+        await bot.sendMessage(chatId, '📞 Please contact your course/group admin for direct support.');
+        break;
+
+      default:
+        // Everything else, including upload-flow text
+        await handleRegularMessage(msg);
     }
   } catch (error) {
     console.error('Error handling message:', error);
