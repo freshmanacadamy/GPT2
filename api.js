@@ -1,5 +1,4 @@
 const TelegramBot = require('node-telegram-bot-api');
-const { put } = require('@vercel/blob');
 
 // 🛡️ GLOBAL ERROR HANDLER
 process.on('unhandledRejection', (error) => {
@@ -20,16 +19,16 @@ if (!BOT_TOKEN) {
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: false });
 
-// ========== SIMPLE IN-MEMORY + BLOB STORAGE ========== //
-// Store metadata in memory (resets on cold start) but files in Blob (persistent)
-let notes = new Map();
-let uploadStates = new Map();
+// ========== SIMPLE IN-MEMORY STORAGE ========== //
+// Uses global to persist between function calls in same instance
+global.notesStorage = global.notesStorage || new Map();
+global.uploadStatesStorage = global.uploadStatesStorage || new Map();
 
 const StorageService = {
   async saveNote(noteData) {
     try {
-      notes.set(noteData.id, noteData);
-      console.log('💾 Note saved to memory:', noteData.id);
+      global.notesStorage.set(noteData.id, noteData);
+      console.log('💾 Note saved:', noteData.id);
       return true;
     } catch (error) {
       console.error('Save note error:', error);
@@ -38,11 +37,11 @@ const StorageService = {
   },
 
   async getNote(noteId) {
-    return notes.get(noteId) || null;
+    return global.notesStorage.get(noteId) || null;
   },
 
   async getAdminNotes(userId) {
-    const userNotes = Array.from(notes.values())
+    const userNotes = Array.from(global.notesStorage.values())
       .filter(note => note.uploadedBy === userId)
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     return userNotes;
@@ -50,7 +49,7 @@ const StorageService = {
 
   async saveUploadState(userId, stateData) {
     try {
-      uploadStates.set(userId, stateData);
+      global.uploadStatesStorage.set(userId, stateData);
       return true;
     } catch (error) {
       console.error('Save state error:', error);
@@ -59,38 +58,20 @@ const StorageService = {
   },
 
   async getUploadState(userId) {
-    return uploadStates.get(userId) || null;
+    return global.uploadStatesStorage.get(userId) || null;
   },
 
   async deleteUploadState(userId) {
-    uploadStates.delete(userId);
+    global.uploadStatesStorage.delete(userId);
     return true;
   },
 
   async getStats() {
-    const totalNotes = notes.size;
-    const activeNotes = Array.from(notes.values()).filter(note => note.is_active !== false).length;
-    const totalViews = Array.from(notes.values()).reduce((sum, note) => sum + (note.views || 0), 0);
+    const totalNotes = global.notesStorage.size;
+    const activeNotes = Array.from(global.notesStorage.values()).filter(note => note.is_active !== false).length;
+    const totalViews = Array.from(global.notesStorage.values()).reduce((sum, note) => sum + (note.views || 0), 0);
     
     return { totalNotes, activeNotes, totalViews };
-  }
-};
-
-// ========== BLOB STORAGE SERVICE ========== //
-const BlobService = {
-  async uploadHTML(htmlContent, fileName) {
-    try {
-      console.log('📤 Uploading to Blob Storage:', fileName);
-      const { url } = await put(fileName, htmlContent, {
-        access: 'public',
-        contentType: 'text/html'
-      });
-      console.log('✅ Blob upload successful:', url);
-      return url;
-    } catch (error) {
-      console.error('❌ Blob upload error:', error);
-      return null;
-    }
   }
 };
 
@@ -103,11 +84,11 @@ const handleStart = async (msg) => {
     const stats = await StorageService.getStats();
     
     await bot.sendMessage(chatId,
-      `🤖 *Notes Bot - Blob Storage*\n\n` +
-      `💾 Metadata: Memory (resets on restart)\n` +
-      `📁 Files: Vercel Blob Storage (persistent)\n` +
+      `🤖 *Notes Bot - Direct Links*\n\n` +
+      `💾 Storage: Telegram File Server\n` +
       `📊 Notes: ${stats.totalNotes} total\n\n` +
-      `✅ Files are permanently stored\n\n` +
+      `✅ Files stored on Telegram servers\n` +
+      `🔗 Direct links that always work\n\n` +
       `Choose an action:`,
       {
         parse_mode: 'Markdown',
@@ -115,7 +96,7 @@ const handleStart = async (msg) => {
           inline_keyboard: [
             [{ text: '📤 Upload HTML File', callback_data: 'upload_html' }],
             [{ text: `📚 View Notes (${stats.totalNotes})`, callback_data: 'view_notes' }],
-            [{ text: '🧪 Test Upload', callback_data: 'test_upload' }]
+            [{ text: '🔄 Reset Storage', callback_data: 'reset_storage' }]
           ]
         }
       }
@@ -123,7 +104,8 @@ const handleStart = async (msg) => {
   } else {
     await bot.sendMessage(chatId, 
       `🎓 *Study Materials*\n\n` +
-      `Access notes shared by your instructors.`,
+      `Access notes shared by your instructors.\n\n` +
+      `Contact admin for access.`,
       { parse_mode: 'Markdown' }
     );
   }
@@ -138,7 +120,7 @@ const startUploadFlow = async (chatId, userId) => {
   await bot.sendMessage(chatId,
     `📤 *Upload HTML File*\n\n` +
     `Please send me an HTML file now!\n\n` +
-    `I'll store it permanently in Vercel Blob Storage.`,
+    `I'll create a direct link that students can access.`,
     { parse_mode: 'Markdown' }
   );
 };
@@ -163,56 +145,29 @@ const handleDocument = async (msg) => {
     if (isHTML) {
       try {
         // Show processing message
-        const processingMsg = await bot.sendMessage(chatId, `⏳ Step 1: Downloading from Telegram...`);
+        const processingMsg = await bot.sendMessage(chatId, `⏳ Processing your HTML file...`);
         
-        // Step 1: Get file from Telegram
-        console.log('🔹 Step 1: Downloading from Telegram...');
+        // Get direct file link from Telegram
+        console.log('🔹 Getting Telegram file link...');
         const fileLink = await bot.getFileLink(document.file_id);
-        const response = await fetch(fileLink);
+        console.log('✅ Telegram file link:', fileLink);
         
-        if (!response.ok) {
-          throw new Error(`Telegram download failed: ${response.status}`);
-        }
-        
-        const htmlContent = await response.text();
-        console.log('✅ Downloaded:', htmlContent.length, 'bytes');
-        
-        // Step 2: Upload to Blob Storage
-        await bot.editMessageText(`⏳ Step 2: Uploading to Blob Storage...`, {
-          chat_id: chatId,
-          message_id: processingMsg.message_id
-        });
-        
-        console.log('🔹 Step 2: Uploading to Blob...');
-        const fileName = `notes/${Date.now()}_${document.file_name}`;
-        const blobUrl = await BlobService.uploadHTML(htmlContent, fileName);
-        
-        if (!blobUrl) {
-          throw new Error('Blob Storage upload failed');
-        }
-        console.log('✅ Blob URL:', blobUrl);
-        
-        // Step 3: Save metadata
-        await bot.editMessageText(`⏳ Step 3: Saving note info...`, {
-          chat_id: chatId,
-          message_id: processingMsg.message_id
-        });
-        
-        console.log('🔹 Step 3: Saving metadata...');
+        // Create note with direct Telegram link
         const noteId = `note_${Date.now()}`;
         const noteData = {
           id: noteId,
           title: document.file_name.replace('.html', ''),
-          description: `Uploaded via Vercel Blob Storage`,
+          description: `📚 ${document.file_name.replace('.html', '')}\n\nUploaded via Telegram Bot\n\nAll Rights Reserved!\n©Freshman Academy 📚`,
           file_name: document.file_name,
           file_size: document.file_size,
-          blob_url: blobUrl,
+          telegram_file_url: fileLink, // Direct Telegram URL
           uploadedBy: userId,
           views: 0,
           is_active: true,
           createdAt: new Date().toISOString()
         };
 
+        // Save note metadata
         const saved = await StorageService.saveNote(noteData);
         
         if (saved) {
@@ -221,15 +176,34 @@ const handleDocument = async (msg) => {
           
           console.log('✅ Upload completed successfully');
           
+          // Create beautiful share message
+          const shareMessage = 
+            `🌟 **New Study Material Available!**\n\n` +
+            `📚 ${document.file_name.replace('.html', '')}\n\n` +
+            `All Rights Reserved!\n` +
+            `©Freshman Academy 📚`;
+          
+          // Send success message with direct link
           await bot.sendMessage(chatId,
             `✅ *Upload Successful!*\n\n` +
             `📁 File: ${document.file_name}\n` +
             `📦 Size: ${(document.file_size / 1024).toFixed(2)} KB\n` +
-            `🔗 Permanent URL: ${blobUrl}\n\n` +
-            `🎉 File is now permanently stored!\n\n` +
-            `Share this URL with students: ${blobUrl}`,
+            `🔗 Direct Link: ${fileLink}\n\n` +
+            `🎉 File is ready to share!`,
             { parse_mode: 'Markdown' }
           );
+
+          // Send the formatted share message with button
+          await bot.sendMessage(chatId, shareMessage, {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '🔓 Open Tutorial Now', url: fileLink }],
+                [{ text: '📤 Share to Groups', callback_data: `share_${noteId}` }]
+              ]
+            }
+          });
+
         } else {
           throw new Error('Failed to save note metadata');
         }
@@ -254,7 +228,14 @@ const handleDocument = async (msg) => {
   } else {
     await bot.sendMessage(chatId,
       `📎 Please start upload first by clicking "Upload HTML File"`,
-      { parse_mode: 'Markdown' }
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📤 Start Upload', callback_data: 'upload_html' }]
+          ]
+        }
+      }
     );
   }
 };
@@ -265,7 +246,7 @@ const showNotesList = async (chatId, userId) => {
   if (userNotes.length === 0) {
     await bot.sendMessage(chatId,
       `📚 *No Notes Yet*\n\n` +
-      `Upload your first HTML file!`,
+      `Upload your first HTML file to get started!`,
       {
         parse_mode: 'Markdown',
         reply_markup: {
@@ -283,42 +264,66 @@ const showNotesList = async (chatId, userId) => {
   userNotes.forEach((note, index) => {
     message += `${index + 1}. ${note.title}\n`;
     message += `   📦 ${(note.file_size / 1024).toFixed(2)} KB\n`;
-    message += `   🔗 ${note.blob_url ? '✅ Stored' : '❌ Missing'}\n\n`;
+    message += `   👀 ${note.views} views\n`;
+    message += `   🔗 ${note.telegram_file_url ? '✅ Active' : '❌ No Link'}\n\n`;
   });
-
-  message += `💡 *Note:* Metadata resets on server restart, but files remain in Blob Storage.`;
 
   await bot.sendMessage(chatId, message, { 
     parse_mode: 'Markdown',
     reply_markup: {
       inline_keyboard: [
         [{ text: '📤 Upload New Note', callback_data: 'upload_html' }],
-        [{ text: '🔄 Refresh', callback_data: 'view_notes' }]
+        [{ text: '🔄 Refresh List', callback_data: 'view_notes' }]
       ]
     }
   });
 };
 
-const testUpload = async (chatId) => {
-  try {
-    // Test Blob Storage with a small HTML
-    const testHTML = `<html><body><h1>Test File</h1><p>Blob Storage Test</p></body></html>`;
-    const testUrl = await BlobService.uploadHTML(testHTML, `test-${Date.now()}.html`);
-    
-    await bot.sendMessage(chatId,
-      `🧪 *Upload Test Results*\n\n` +
-      `🔹 Blob Storage: ${testUrl ? '✅ Working' : '❌ Failed'}\n` +
-      `🔹 Test URL: ${testUrl || 'None'}\n\n` +
-      `🎉 Blob Storage is ready for uploads!`,
-      { parse_mode: 'Markdown' }
-    );
-  } catch (error) {
-    await bot.sendMessage(chatId,
-      `❌ *Test Failed*\n\n` +
-      `Error: ${error.message}`,
-      { parse_mode: 'Markdown' }
-    );
+const shareNotePreview = async (chatId, noteId) => {
+  const note = await StorageService.getNote(noteId);
+  
+  if (!note) {
+    await bot.sendMessage(chatId, '❌ Note not found.');
+    return;
   }
+
+  const shareMessage = 
+    `🌟 **New Study Material Available!**\n\n` +
+    `${note.description}\n\n` +
+    `All Rights Reserved!\n` +
+    `©Freshman Academy 📚`;
+
+  // Send preview
+  await bot.sendMessage(chatId,
+    `📤 *Share This Message*\n\n` +
+    `Copy and paste to your groups:\n\n` +
+    `---\n` +
+    `${shareMessage}\n` +
+    `---`,
+    { parse_mode: 'Markdown' }
+  );
+
+  // Send the actual message with button
+  await bot.sendMessage(chatId, shareMessage, {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🔓 Open Tutorial Now', url: note.telegram_file_url }]
+      ]
+    }
+  });
+};
+
+const resetStorage = async (chatId) => {
+  global.notesStorage.clear();
+  global.uploadStatesStorage.clear();
+  
+  await bot.sendMessage(chatId,
+    `🔄 *Storage Reset*\n\n` +
+    `All notes and upload states have been cleared.\n` +
+    `You can start fresh now!`,
+    { parse_mode: 'Markdown' }
+  );
 };
 
 const handleCallbackQuery = async (callbackQuery) => {
@@ -334,8 +339,11 @@ const handleCallbackQuery = async (callbackQuery) => {
       await startUploadFlow(chatId, userId);
     } else if (data === 'view_notes') {
       await showNotesList(chatId, userId);
-    } else if (data === 'test_upload') {
-      await testUpload(chatId);
+    } else if (data === 'reset_storage') {
+      await resetStorage(chatId);
+    } else if (data.startsWith('share_')) {
+      const noteId = data.replace('share_', '');
+      await shareNotePreview(chatId, noteId);
     }
 
   } catch (error) {
@@ -349,6 +357,8 @@ const handleMessage = async (msg) => {
 
   if (text === '/start') {
     await handleStart(msg);
+  } else if (text === '/reset') {
+    await resetStorage(chatId);
   }
 };
 
@@ -364,11 +374,8 @@ module.exports = async (req, res) => {
   if (req.method === 'GET') {
     const stats = await StorageService.getStats();
     return res.status(200).json({
-      status: '🟢 Blob Notes Bot Online',
-      storage: {
-        blob_storage: 'Active',
-        memory_storage: 'Active (resets on cold start)'
-      },
+      status: '🟢 Telegram Notes Bot Online',
+      storage: 'Telegram File Server + Memory',
       stats: stats,
       timestamp: new Date().toISOString()
     });
@@ -396,6 +403,6 @@ module.exports = async (req, res) => {
   return res.status(405).json({ error: 'Method not allowed' });
 };
 
-console.log('✅ Blob Notes Bot Started!');
-console.log('📁 Storage: Blob Storage (persistent) + Memory (temp)');
+console.log('✅ Telegram Notes Bot Started!');
+console.log('📁 Storage: Telegram File Links (Always Works)');
 console.log('🚀 Ready for uploads!');
