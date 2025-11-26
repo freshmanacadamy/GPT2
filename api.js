@@ -1,5 +1,4 @@
 const TelegramBot = require('node-telegram-bot-api');
-const admin = require('firebase-admin');
 
 // 🛡️ GLOBAL ERROR HANDLER
 process.on('unhandledRejection', (error) => {
@@ -24,11 +23,11 @@ const handleStart = async (msg) => {
   const isAdmin = ADMIN_IDS.includes(userId);
   
   if (isAdmin) {
+    // NO MARKDOWN - plain text
     await bot.sendMessage(chatId,
-      `🤖 *Simple Test Bot*\n\n` +
+      `SIMPLE TEST BOT\n\n` +
       `Click the button below to test HTML upload:`,
       {
-        parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
             [{ text: '📤 TEST UPLOAD', callback_data: 'test_upload' }]
@@ -37,22 +36,21 @@ const handleStart = async (msg) => {
       }
     );
   } else {
-    await bot.sendMessage(chatId, '❌ Admin access required.');
+    await bot.sendMessage(chatId, 'Admin access required.');
   }
 };
 
 const startTestUpload = async (chatId) => {
+  // NO MARKDOWN - plain text
   await bot.sendMessage(chatId,
-    `🧪 *Test Upload Started*\n\n` +
+    `TEST UPLOAD STARTED\n\n` +
     `Please send me an HTML file now!\n\n` +
-    `I'll show you what I receive.`,
-    { parse_mode: 'Markdown' }
+    `I'll show you what I receive.`
   );
 };
 
 const handleDocument = async (msg) => {
   const chatId = msg.chat.id;
-  const userId = msg.from.id;
   const document = msg.document;
 
   console.log('📎 DOCUMENT RECEIVED:', {
@@ -80,29 +78,29 @@ const handleDocument = async (msg) => {
         uploadedAt: new Date()
       });
 
+      // NO MARKDOWN - plain text to avoid parsing errors
       await bot.sendMessage(chatId,
-        `✅ *HTML File Received!*\n\n` +
-        `📁 File: ${document.file_name}\n` +
-        `📦 Size: ${(document.file_size / 1024).toFixed(2)} KB\n` +
-        `🔗 Telegram Link: ${fileLink}\n\n` +
-        `🎉 Upload successful! I can receive HTML files.`,
-        { parse_mode: 'Markdown' }
+        `✅ HTML FILE RECEIVED!\n\n` +
+        `File: ${document.file_name}\n` +
+        `Size: ${(document.file_size / 1024).toFixed(2)} KB\n` +
+        `Type: ${document.mime_type || 'Unknown'}\n\n` +
+        `🎉 Upload successful! Bot can receive HTML files.`
       );
 
     } catch (error) {
       console.error('Upload error:', error);
+      // NO MARKDOWN - plain text
       await bot.sendMessage(chatId,
-        `❌ *Upload Failed*\n\n` +
-        `Error: ${error.message}`,
-        { parse_mode: 'Markdown' }
+        `❌ UPLOAD FAILED\n\n` +
+        `Error: ${error.message}`
       );
     }
   } else {
+    // NO MARKDOWN - plain text
     await bot.sendMessage(chatId,
-      `❌ *Wrong File Type*\n\n` +
+      `❌ WRONG FILE TYPE\n\n` +
       `Please send an HTML file (.html extension)\n` +
-      `You sent: ${document.file_name}`,
-      { parse_mode: 'Markdown' }
+      `You sent: ${document.file_name}`
     );
   }
 };
@@ -122,7 +120,7 @@ const handleCallbackQuery = async (callbackQuery) => {
   } catch (error) {
     console.error('Callback error:', error);
     await bot.answerCallbackQuery(callbackQuery.id, { 
-      text: '❌ Error' 
+      text: 'Error' 
     });
   }
 };
@@ -152,7 +150,7 @@ module.exports = async (req, res) => {
 
   if (req.method === 'GET') {
     return res.status(200).json({
-      status: '🟢 Simple Test Bot Online',
+      status: 'Simple Test Bot Online',
       notes_count: testNotes.length,
       timestamp: new Date().toISOString()
     });
