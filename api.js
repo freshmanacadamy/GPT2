@@ -705,9 +705,11 @@ const handleCallbackQuery = async (callbackQuery) => {
   const chatId = message.chat.id;
 
   console.log(`🔄 Callback from ${userId}: ${data}`);
+  console.log(`📋 Available folders:`, Array.from(folders.keys())); // Add this line
 
   try {
     await bot.answerCallbackQuery(callbackQuery.id);
+    // ... rest of your code
 
     if (data.startsWith('test_')) {
       const testNum = data.replace('test_', '');
@@ -719,9 +721,15 @@ const handleCallbackQuery = async (callbackQuery) => {
     else if (data === 'admin_upload_note') {
       await startUploadFlow(chatId, userId);
     }
-    else if (data === 'admin_manage_folders') {
-      await showFolderManagement(chatId);
+     else if (data === 'add_folder') {
+  await handleAddFolder(chatId, userId);
     }
+else if (data === 'add_category') {
+  await handleAddCategory(chatId, userId);
+     }
+      
+
+      
     else if (data === 'admin_bulk_ops') {
       await showBulkOperations(chatId);
     }
@@ -969,6 +977,34 @@ const revokeNoteAccess = async (chatId, noteId) => {
     await bot.sendMessage(chatId, '❌ Error revoking access.');
   }
 };
+
+const handleAddFolder = async (chatId, userId) => {
+  await bot.sendMessage(chatId,
+    `📁 *Add New Folder*\n\n` +
+    `This feature is coming soon!\n\n` +
+    `For now, you can use the existing folders:\n` +
+    `• 📁 Natural Sciences\n` +
+    `• 📁 Social Sciences`,
+    { parse_mode: 'Markdown' }
+  );
+};
+
+const handleAddCategory = async (chatId, userId) => {
+  await bot.sendMessage(chatId,
+    `🎯 *Add New Category*\n\n` +
+    `This feature is coming soon!\n\n` +
+    `For now, you can use existing categories:\n` +
+    `• 🎯 Pre-Engineering\n` +
+    `• 🎯 Freshman Program\n` +
+    `• 🎯 Medical Sciences\n` +
+    `• 🎯 Pure Sciences\n` +
+    `• 📚 Business Studies\n` +
+    `• 📚 Law & Politics\n` +
+    `• 📚 Arts & Humanities`,
+    { parse_mode: 'Markdown' }
+  );
+};
+
 
 const openNote = async (chatId, noteId, userId) => {
   try {
