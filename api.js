@@ -460,7 +460,6 @@ const handleStart = async (msg) => {
     await showMainMenu(chatId, userId);
   }
 };
-
 const handleMessage = async (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
@@ -471,6 +470,53 @@ const handleMessage = async (msg) => {
   if (!text) return;
 
   try {
+    // 🔥 ADD THIS: Check if user is in upload flow FIRST
+    const userState = userStates.get(userId);
+    if (userState) {
+      if (userState.state === 'awaiting_note_title') {
+        userState.noteData.title = text;
+        userState.state = 'awaiting_note_description';
+        userStates.set(userId, userState);
+        
+        await bot.sendMessage(chatId,
+          `📝 *Step 3/4 - Note Description*\n\n` +
+          `Enter a description for your note:\n\n` +
+          `You can use formatting like:\n` +
+          `• Hashtags: #Chemistry #Science\n` +
+          `• Emojis: 📚 🔬\n` +
+          `• Multiple lines\n\n` +
+          `*Example:*\n` +
+          `"📚 General #Chemistry\n\n` +
+          `📚 Chapter One - Essential Ideas In Chemistry\n` +
+          `• Chemistry as Experimental Science\n` +
+          `• Properties of Matter\n\n` +
+          `All Rights Reserved!\n` +
+          `©Freshman Academy 📚"`,
+          { parse_mode: 'Markdown' }
+        );
+        return; // Stop here - don't process further
+      }
+      else if (userState.state === 'awaiting_note_description') {
+        userState.noteData.description = text;
+        userState.state = 'awaiting_note_file';
+        userStates.set(userId, userState);
+        
+        await bot.sendMessage(chatId,
+          `📎 *Step 4/4 - Upload HTML File*\n\n` +
+          `🎉 Almost done! Now send me the HTML file.\n\n` +
+          `*How to upload:*\n` +
+          `1. Click the 📎 paperclip icon\n` +
+          `2. Select "Document"\n` +
+          `3. Choose your .html file\n` +
+          `4. Send it to me\n\n` +
+          `I'll handle the rest automatically! 🚀`,
+          { parse_mode: 'Markdown' }
+        );
+        return; // Stop here - don't process further
+      }
+    }
+
+    // If not in upload flow, process commands as normal
     if (text.startsWith('/')) {
       switch (text) {
         case '/start':
@@ -521,6 +567,85 @@ const handleMessage = async (msg) => {
     await bot.sendMessage(chatId, '❌ Error processing message.');
   }
 };
+
+// ========== DOCUMENT HANDLER ========== //
+const handleDocument = async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const document = msg.document;
+
+  console.log(`📎 Document from ${userId}:`, document?.file_name);
+
+  const userState = userStates.get(userId);
+  
+  if (userState && userState.state === 'awaiting_note_file' && document) {
+    // Check if it's an HTML file
+    if (!document.file_name?.toLowerCase().endsWith('.html')) {
+      await bot.sendMessage(chatId,
+        `❌ *Invalid File Type*\n\n` +
+        `Please send an HTML file (.html extension).\n\n` +
+        `Current file: ${document.file_name}\n` +
+        `Required: .html file`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    try {
+      await bot.sendMessage(chatId, `⏳ Processing your HTML file...`);
+
+      // Simulate file processing (you'll add real Firebase upload here)
+      const noteId = `note_${Date.now()}`;
+      const noteData = {
+        id: noteId,
+        title: userState.noteData.title,
+        description: userState.noteData.description,
+        folder: userState.noteData.folder,
+        category: userState.noteData.category,
+        uploadedBy: userId,
+        views: 0,
+        is_active: true,
+        firebase_url: `https://storage.googleapis.com/your-bucket/notes/${noteId}.html`,
+        createdAt: new Date()
+      };
+
+      // Save to storage
+      if (db) {
+        await FirebaseService.saveNote(noteData);
+      } else {
+        notes.set(noteId, noteData);
+      }
+
+      // Clear user state
+      userStates.delete(userId);
+
+      await bot.sendMessage(chatId,
+        `✅ *Note Uploaded Successfully!*\n\n` +
+        `📖 *Title:* ${noteData.title}\n` +
+        `📁 *Location:* ${folders.get(noteData.folder)?.name} → ${categories.get(noteData.category)?.name}\n\n` +
+        `🎉 Your note is now live and ready to share!`,
+        { parse_mode: 'Markdown' }
+      );
+
+      await showNoteManagement(chatId, noteId);
+
+    } catch (error) {
+      console.error('Document upload error:', error);
+      await bot.sendMessage(chatId,
+        `❌ *Upload Failed*\n\n` +
+        `Error: ${error.message}\n\n` +
+        `Please try again.`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+  } else {
+    await bot.sendMessage(chatId,
+      `📎 I see you sent a file, but you're not in upload mode.\n\n` +
+      `Use "📤 Upload Note" to start the upload process.`
+    );
+  }
+};
+
 
 const handleCallbackQuery = async (callbackQuery) => {
   const message = callbackQuery.message;
@@ -879,6 +1004,7 @@ const deleteNote = async (chatId, noteId, userId) => {
 };
 
 // ========== VERCEL HANDLER ========== //
+// ========== VERCEL HANDLER ========== //
 module.exports = async (req, res) => {
   console.log(`🌐 ${req.method} request to ${req.url}`);
   
@@ -914,17 +1040,30 @@ module.exports = async (req, res) => {
       console.log('📦 Update received:', update.update_id);
 
       if (update.message) {
-        await handleMessage(update.message);
+        // Handle different message types
+        if (update.message.text) {
+          await handleMessage(update.message);
+        } else if (update.message.document) {
+          await handleDocument(update.message);
+        } else if (update.message.photo) {
+          // Handle photos if needed
+          console.log('📸 Photo received, but not handled');
+        } else {
+          console.log('🔍 Unknown message type:', Object.keys(update.message));
+        }
       } else if (update.callback_query) {
         await handleCallbackQuery(update.callback_query);
       } else {
-        console.log('🔍 Unknown update type');
+        console.log('🔍 Unknown update type:', Object.keys(update));
       }
 
       return res.status(200).json({ ok: true });
     } catch (error) {
       console.error('❌ Webhook error:', error);
-      return res.status(500).json({ error: error.message });
+      return res.status(500).json({ 
+        error: 'Internal server error',
+        message: error.message 
+      });
     }
   }
 
@@ -934,3 +1073,4 @@ module.exports = async (req, res) => {
 console.log('✅ JU Notes Bot Server Started!');
 console.log('🔧 Debug Mode: Active');
 console.log('🎯 Test with: /start then click "🛠️ Test Buttons"');
+console.log('📎 Document upload: Supported');
